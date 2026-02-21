@@ -1,0 +1,48 @@
+audio:
+  sample_rate: 32000
+  max_length: 5
+
+snac:
+  model: "hubertsiuzdak/snac_32khz"
+  codebook_size: 4096
+  n_levels: 4
+
+# Reference: https://github.com/DBD-research-group/BirdSet/blob/main/birdset/modules/models/birdset_models/efficientnet_bs.py
+filtering:
+  model_checkpoint: "DBD-research-group/EfficientNet-B1-BirdSet-XCL"
+  n_fft: 2048
+  hop_length: 256
+  n_mels: 256
+  spec_mean: -4.268
+  spec_std: 4.569
+  confidence_threshold: 0.7
+  singularity_ratio: 2.0
+  require_label_match: true
+  batch_size: 64
+  min_samples_per_class: 200
+  output_dir: "data/filtered"
+
+data:
+  token_dir: "data/snac_tokens"
+  val_ratio: 0.2
+  test_ratio: 0.2
+  seed: 42
+
+training:
+  epochs: 100
+  batch_size: 8
+  learning_rate: 1.0e-4
+  warmup_steps: 1000
+  max_seq_len: 903            # cls + bos + 900 SNAC tokens + eos
+  num_workers: 8
+  save_dir: "checkpoints"
+
+model:
+  n_embd: 768
+  n_layer: 12
+  n_head: 12
+  n_positions: 1024
+
+wandb:
+  wandb_project: "ar-bird-vocalization"
+  wandb_entity: "hamula-dm-ukrainian-catholic-university"
