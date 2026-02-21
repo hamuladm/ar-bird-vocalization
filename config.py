@@ -71,5 +71,5 @@ N_HEAD: int = _model["n_head"]
 N_POSITIONS: int = _model["n_positions"]
 
 _wandb = _raw["wandb"]
-WANDB_PROJECT: str = _wandb["project"]
-WANDB_ENTITY: str = _wandb["entity"]
+WANDB_PROJECT: str = _wandb["wandb_project"]
+WANDB_ENTITY: str = _wandb["wandb_entity"]

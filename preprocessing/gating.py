@@ -2,7 +2,7 @@ from typing import Dict, List
 import torch
 
 from config import GatingConfig
-from .code_translator import BirdTranslator
+from preprocessing.code_translator import BirdTranslator
 
 
 class GatingStrategy:

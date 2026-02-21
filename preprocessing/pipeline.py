@@ -5,9 +5,16 @@ from tqdm import tqdm
 from typing import Dict, List
 from datasets import load_dataset
 
-from utils import setup_logger, load_and_pad_batch, get_all_segments
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from utils.audio_utils import  load_and_pad_batch, get_all_segments
+from utils.logging_utils import setup_logger
 from config import PipelineConfig, GatingConfig
-from preprocessing import BirdClassifier, GatingStrategy, BirdTranslator
+from preprocessing.judge import BirdClassifier
+from preprocessing.gating import GatingStrategy
+from preprocessing.code_translator import BirdTranslator
 
 
 logger = setup_logger("preprocessing_pipeline")
