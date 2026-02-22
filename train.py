@@ -10,7 +10,8 @@ import argparse
 
 from snac import SNAC
 
-from utils import setup_logger, load_ebird_mapping
+from utils.logging_utils import setup_logger
+from utils.mapping_utils import load_ebird_mapping
 from config import (
     TOKEN_DIR,
     TRAIN_EPOCHS,
@@ -32,7 +33,7 @@ from model import (
     create_gpt2_model
 )
 from dataset import SNACTokenDataset, snac_collate_fn
-from checkpoint import save_checkpoint
+from checkpoint import save_checkpoint, load_checkpoint
 from generate import generate_audio_samples
 
 logger = setup_logger("train")
@@ -49,7 +50,8 @@ def train_epoch(model: GPT2LMHeadModel,
                 global_step=0,
                 vocab_size=None,
                 n_classes=None,
-                ebird_to_id=None):
+                ebird_to_id=None,
+                save_scheduler=None):
     model.train()
     total_loss = 0
     pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
@@ -82,13 +84,14 @@ def train_epoch(model: GPT2LMHeadModel,
         if wandb.run:
             wandb.log({"train_loss": loss.item(), "lr": scheduler.get_last_lr()[0]})
 
-        if save_dir and global_step % save_every_steps == 0:
-            save_checkpoint(
-                save_dir / f"checkpoint_step_{global_step}.pt",
-                model, optimizer, epoch, global_step,
-                vocab_size, n_classes, ebird_to_id,
-            )
-            logger.info(f"Saved checkpoint at step {global_step}")
+        # if save_dir and global_step % save_every_steps == 0:
+        #     save_checkpoint(
+        #         save_dir / f"checkpoint_step_{global_step}.pt",
+        #         model, optimizer, epoch, global_step,
+        #         vocab_size, n_classes, ebird_to_id,
+        #         scheduler=save_scheduler,
+        #     )
+        #     logger.info(f"Saved checkpoint at step {global_step}")
 
     return total_loss / len(dataloader), global_step
 
@@ -126,6 +129,7 @@ def main():
     parser.add_argument("--save-dir", type=str, default=str(SAVE_DIR))
     parser.add_argument("--token-dir", type=str, default=str(TOKEN_DIR))
     parser.add_argument("--filtered-dir", type=str, default="data/filtered")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume training from")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--sample-classes", type=int, nargs="*", default=None,
                         help="Class IDs for audio generation each epoch (default: 3 random)")
@@ -183,17 +187,34 @@ def main():
     total_steps = len(train_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, total_steps)
 
+    start_epoch = 1
+    global_step = 0
+    best_val_loss = float("inf")
+
+    if args.resume:
+        logger.info(f"Resuming from checkpoint: {args.resume}")
+        ckpt = load_checkpoint(args.resume, device=device)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        if "scheduler_state_dict" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        else:
+            for _ in range(ckpt["global_step"]):
+                scheduler.step()
+        start_epoch = ckpt["epoch"] + 1
+        global_step = ckpt["global_step"]
+        best_val_loss = ckpt.get("val_loss") or float("inf")
+        logger.info(f"Resumed: epoch={ckpt['epoch']}, step={global_step}, val_loss={best_val_loss}")
+
     if args.wandb:
         wandb.init(project=WANDB_PROJECT, entity=WANDB_ENTITY, config=vars(args))
 
-    best_val_loss = float("inf")
-    global_step = 0
-
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         train_loss, global_step = train_epoch(
             model, train_loader, optimizer, scheduler, device, epoch,
             save_dir=save_dir, save_every_steps=200, global_step=global_step,
             vocab_size=vocab_size, n_classes=n_classes, ebird_to_id=ebird_to_id,
+            save_scheduler=scheduler,
         )
         val_loss = validate_epoch(model, val_loader, device)
         logger.info(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
@@ -218,6 +239,7 @@ def main():
                 save_dir / "best_model.pt",
                 model, optimizer, epoch, global_step,
                 vocab_size, n_classes, ebird_to_id, val_loss=val_loss,
+                scheduler=scheduler,
             )
             logger.info(f"Saved best model (val_loss={val_loss:.4f})")
 
@@ -226,6 +248,7 @@ def main():
                 save_dir / f"checkpoint_epoch_{epoch}.pt",
                 model, optimizer, epoch, global_step,
                 vocab_size, n_classes, ebird_to_id, val_loss=val_loss,
+                scheduler=scheduler,
             )
 
     if args.wandb:

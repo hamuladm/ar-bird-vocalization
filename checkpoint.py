@@ -2,8 +2,8 @@ import torch
 from pathlib import Path
 
 
-def save_checkpoint(path, model, optimizer, epoch, global_step, vocab_size, n_classes, ebird_to_id, val_loss=None):
-    torch.save({
+def save_checkpoint(path, model, optimizer, epoch, global_step, vocab_size, n_classes, ebird_to_id, val_loss=None, scheduler=None):
+    state = {
         "epoch": epoch,
         "global_step": global_step,
         "model_state_dict": model.state_dict(),
@@ -12,7 +12,10 @@ def save_checkpoint(path, model, optimizer, epoch, global_step, vocab_size, n_cl
         "n_classes": n_classes,
         "ebird_to_id": ebird_to_id,
         "val_loss": val_loss,
-    }, path)
+    }
+    if scheduler is not None:
+        state["scheduler_state_dict"] = scheduler.state_dict()
+    torch.save(state, path)
 
 
 def load_checkpoint(path, device="cpu"):

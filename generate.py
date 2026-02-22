@@ -5,7 +5,8 @@ import torchaudio
 from pathlib import Path
 from snac import SNAC
 
-from utils import setup_logger, load_ebird_mapping
+from utils.logging_utils import setup_logger
+from utils.mapping_utils import load_ebird_mapping
 from config import (
     SNAC_MODEL,
     SAMPLE_RATE,
