@@ -2,10 +2,14 @@ import numpy as np
 import torch
 from pathlib import Path
 from tqdm import tqdm
+from torch.utils.data import DataLoader
 
 from snac import SNAC
 
-from utils import setup_logger, pack_segments, load_packed_sample, load_segments_and_mapping
+from utils.logging_utils import setup_logger
+from utils.audio_utils import pack_segments
+from utils.mapping_utils import load_segments_and_mapping
+from utils.audio_utils import PackedSegmentDataset
 from config import SNAC_MODEL, CODEBOOK_SIZE, SAMPLE_RATE
 
 logger = setup_logger("snac_inference")
@@ -72,30 +76,38 @@ def encode_split(
     target_length: float = 5,
     device: str = "cuda",
     batch_size: int = 32,
+    num_workers: int = 4,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    dataset = PackedSegmentDataset(
+        packing_plans, ebird_to_id,
+        target_sr=target_sr, target_length=target_length,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=False,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+    )
+
     all_codes, all_labels = [], []
 
-    for start in tqdm(range(0, len(packing_plans), batch_size), desc="Encode"):
-        batch_plans = packing_plans[start : start + batch_size]
-
-        audio_arrays = [
-            load_packed_sample(plan, target_sr=target_sr, target_length=target_length)
-            for plan in batch_plans
-        ]
-        audio_tensor = torch.stack([torch.from_numpy(a).float() for a in audio_arrays])
-        batch_labels = [ebird_to_id[plan["ebird_code"]] for plan in batch_plans]
-
-        codes = encode_batch(model, audio_tensor, device)
-        for i in range(len(batch_plans)):
-            all_codes.append(codes[i])
-            all_labels.append(batch_labels[i])
+    for audio_batch, batch_labels in tqdm(loader, desc="Encode"):
+        codes = encode_batch(model, audio_batch, device)
+        all_codes.append(codes)
+        all_labels.append(batch_labels.numpy())
 
     out_path = output_dir / "tokens.npz"
-    np.savez(out_path, codes=np.array(all_codes), labels=np.array(all_labels))
-    logger.info(f"Saved {len(all_codes)} samples to {out_path}")
+    np.savez(
+        out_path,
+        codes=np.concatenate(all_codes, axis=0),
+        labels=np.concatenate(all_labels, axis=0),
+    )
+    logger.info(f"Saved {len(all_codes)} batches ({sum(len(c) for c in all_codes)} samples) to {out_path}")
 
 
 def main():
@@ -106,6 +118,7 @@ def main():
     parser.add_argument("--split", choices=["train", "val", "test"], default="train", help="Split to encode")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -129,6 +142,7 @@ def main():
         target_length=5,
         device=args.device,
         batch_size=args.batch_size,
+        num_workers=args.num_workers,
     )
 
 

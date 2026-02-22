@@ -138,6 +138,37 @@ def pack_segments(
     return packed
 
 
+class PackedSegmentDataset(Dataset):
+    """Map-style dataset for packed audio plans.
+
+    Each item loads and stitches together one packing plan via
+    load_packed_sample, returning (audio_tensor, label).
+    """
+
+    def __init__(
+        self,
+        packing_plans: List[Dict],
+        ebird_to_id: Dict[str, int],
+        target_sr: int = DEFAULT_SR,
+        target_length: float = DEFAULT_MAX_LENGTH,
+    ):
+        self.plans = packing_plans
+        self.ebird_to_id = ebird_to_id
+        self.target_sr = target_sr
+        self.target_length = target_length
+
+    def __len__(self) -> int:
+        return len(self.plans)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        plan = self.plans[idx]
+        audio = load_packed_sample(
+            plan, target_sr=self.target_sr, target_length=self.target_length,
+        )
+        label = self.ebird_to_id[plan["ebird_code"]]
+        return torch.from_numpy(audio).float(), label
+
+
 def load_packed_sample(
     plan: Dict,
     target_sr: int = DEFAULT_SR,
