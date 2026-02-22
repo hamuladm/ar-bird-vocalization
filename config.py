@@ -41,6 +41,7 @@ class PipelineConfig:
     gating: GatingConfig = field(default_factory=GatingConfig)
     model_checkpoint: str = MODEL_CHECKPOINT
     batch_size: int = _filt["batch_size"]
+    num_workers: int = _filt["num_workers"]
     device: str = "cuda"
     output_dir: str = _filt["output_dir"]
     min_samples_per_class: int = MIN_SAMPLES_PER_CLASS

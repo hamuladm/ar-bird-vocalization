@@ -4,12 +4,13 @@ from pathlib import Path
 from tqdm import tqdm
 from typing import Dict, List
 from datasets import load_dataset
+from torch.utils.data import DataLoader
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils.audio_utils import  load_and_pad_batch, get_all_segments
+from utils.audio_utils import SegmentDataset, get_all_segments
 from utils.logging_utils import setup_logger
 from config import PipelineConfig, GatingConfig
 from preprocessing.judge import BirdClassifier
@@ -25,19 +26,25 @@ def classify_and_gate_segments(
     judge: BirdClassifier,
     gating: GatingStrategy,
     batch_size: int,
+    num_workers: int = 4,
 ) -> Dict:
     passed_segments = []
     failed_segments = []
     passed_probs = []
 
-    for batch_start in tqdm(range(0, len(segments_info), batch_size), desc="Evaluating (raw)"):
+    dataset = SegmentDataset(segments_info)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        shuffle=False,
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+    )
 
-        batch_end = min(batch_start + batch_size, len(segments_info))
-        batch_info = segments_info[batch_start : batch_end]
-        tasks = [(s["filepath"], s["start"], s["end"]) for s in batch_info]
-
-        audio_batch = load_and_pad_batch(tasks)
+    for audio_batch, indices in tqdm(loader, desc="Evaluating (raw)"):
         metrics = judge.evaluate(audio_batch)
+        batch_info = [segments_info[i] for i in indices]
         batch_labels = [s["ground_truth_ebird"] for s in batch_info]
         passed_mask = gating.process_batch(metrics, ground_truth_labels=batch_labels)
 
@@ -131,6 +138,7 @@ def filter_segments(config: PipelineConfig = None) -> Dict:
         judge=judge,
         gating=gating,
         batch_size=config.batch_size,
+        num_workers=config.num_workers
     )
 
     stats = {
@@ -215,6 +223,8 @@ if __name__ == "__main__":
                         help="Disable Gate 3 (label verification)")
     parser.add_argument("--batch-size", type=int, default=64,
                         help="Batch size for inference (default: 64)")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="DataLoader workers for parallel audio I/O (default: 4)")
     parser.add_argument("--device", default="cuda",
                         help="Device for inference (default: cuda)")
     parser.add_argument("--output-dir", default="data/filtered",
@@ -252,6 +262,7 @@ if __name__ == "__main__":
         config = PipelineConfig(
             gating=gating_config,
             batch_size=args.batch_size,
+            num_workers=args.num_workers,
             device=args.device,
             output_dir=args.output_dir,
             val_ratio=args.val_ratio,

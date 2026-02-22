@@ -19,6 +19,7 @@ filtering:
   singularity_ratio: 2.0
   require_label_match: true
   batch_size: 64
+  num_workers: 8
   min_samples_per_class: 200
   output_dir: "data/filtered"
 

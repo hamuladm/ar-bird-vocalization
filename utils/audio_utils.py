@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch.utils.data import Dataset
 import soundfile as sf
 import librosa
 from typing import Dict, List, Tuple
@@ -58,6 +59,29 @@ def load_and_pad_batch(
 ) -> torch.Tensor:
     arrays = [load_audio_fixed_length(fp, s, e, target_sr=target_sr, max_length=max_length) for fp, s, e in tasks]
     return torch.stack([torch.from_numpy(a).float() for a in arrays])
+
+
+class SegmentDataset(Dataset):
+    def __init__(
+        self,
+        segments_info: List[Dict],
+        target_sr: int = DEFAULT_SR,
+        max_length: int = DEFAULT_MAX_LENGTH,
+    ):
+        self.segments_info = segments_info
+        self.target_sr = target_sr
+        self.max_length = max_length
+
+    def __len__(self) -> int:
+        return len(self.segments_info)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        seg = self.segments_info[idx]
+        audio = load_audio_fixed_length(
+            seg["filepath"], seg["start"], seg["end"],
+            target_sr=self.target_sr, max_length=self.max_length,
+        )
+        return torch.from_numpy(audio).float(), idx
 
 
 def get_all_segments(item: dict) -> List[Tuple[float, float]]:
