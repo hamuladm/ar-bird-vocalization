@@ -32,6 +32,34 @@ def decode_to_audio(snac_codes: np.ndarray, snac_model: SNAC, device: str) -> np
     return audio[0, 0].cpu().numpy()
 
 
+@torch.no_grad()
+def generate_audio_samples(
+    model,
+    snac_model,
+    device,
+    id_to_ebird,
+    class_ids,
+    sample_rate=SAMPLE_RATE,
+    max_length=MAX_SEQ_LEN,
+    temperature=1.0,
+    top_k=50,
+):
+    """Generate one audio sample per class_id, returning (name, np_audio, sr) tuples."""
+    was_training = model.training
+    samples = []
+    for class_id in class_ids:
+        class_name = id_to_ebird.get(class_id, f"class_{class_id}")
+        tokens = generate_tokens(model, device, class_id, max_length, temperature, top_k)
+        snac_codes = extract_snac_codes(tokens)
+        if len(snac_codes) < 15:
+            continue
+        audio = decode_to_audio(snac_codes, snac_model, device)
+        samples.append((class_name, audio, sample_rate))
+    if was_training:
+        model.train()
+    return samples
+
+
 def load_generation_models(
     checkpoint_path: str,
     device: torch.device,

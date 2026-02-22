@@ -1,11 +1,14 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from torch.utils.data import DataLoader
 from transformers import GPT2LMHeadModel, get_cosine_schedule_with_warmup
 from pathlib import Path
 from tqdm import tqdm
 import wandb
 import argparse
+
+from snac import SNAC
 
 from utils import setup_logger, load_ebird_mapping
 from config import (
@@ -19,6 +22,8 @@ from config import (
     SAVE_DIR,
     WANDB_PROJECT,
     WANDB_ENTITY,
+    SNAC_MODEL,
+    SAMPLE_RATE,
 )
 from model import (
     SNAC_VOCAB_SIZE,
@@ -28,6 +33,7 @@ from model import (
 )
 from dataset import SNACTokenDataset, snac_collate_fn
 from checkpoint import save_checkpoint
+from generate import generate_audio_samples
 
 logger = setup_logger("train")
 
@@ -121,6 +127,10 @@ def main():
     parser.add_argument("--token-dir", type=str, default=str(TOKEN_DIR))
     parser.add_argument("--filtered-dir", type=str, default="data/filtered")
     parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--sample-classes", type=int, nargs="*", default=None,
+                        help="Class IDs for audio generation each epoch (default: 3 random)")
+    parser.add_argument("--num-sample-classes", type=int, default=3,
+                        help="Number of random classes to sample if --sample-classes not given")
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -160,6 +170,15 @@ def main():
     model = create_gpt2_model(vocab_size=vocab_size, n_positions=args.max_seq_len).to(device)
     logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
+    snac_model = SNAC.from_pretrained(SNAC_MODEL).eval().to(device)
+
+    if args.sample_classes is not None:
+        sample_class_ids = args.sample_classes
+    else:
+        rng = np.random.default_rng(42)
+        sample_class_ids = rng.choice(n_classes, size=min(args.num_sample_classes, n_classes), replace=False).tolist()
+    logger.info(f"Audio sample classes: {[id_to_ebird[c] for c in sample_class_ids]}")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     total_steps = len(train_loader) * args.epochs
     scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup_steps, total_steps)
@@ -180,7 +199,18 @@ def main():
         logger.info(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
 
         if args.wandb:
-            wandb.log({"epoch": epoch, "train_loss_epoch": train_loss, "val_loss": val_loss})
+            log_dict = {"epoch": epoch, "train_loss_epoch": train_loss, "val_loss": val_loss}
+
+            logger.info(f"Generating audio samples for epoch {epoch}...")
+            samples = generate_audio_samples(
+                model, snac_model, device, id_to_ebird,
+                class_ids=sample_class_ids,
+                max_length=args.max_seq_len,
+            )
+            for name, audio, sr in samples:
+                log_dict[f"audio/{name}"] = wandb.Audio(audio, sample_rate=sr, caption=f"{name}_epoch{epoch}")
+
+            wandb.log(log_dict)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
