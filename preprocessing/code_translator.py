@@ -1,5 +1,11 @@
-from typing import Dict, Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Dict, List, Optional
+
 from datasets import load_dataset_builder
+
+if TYPE_CHECKING:
+    from preprocessing.taxonomy import TaxonomyMapper
 
 
 class BirdTranslator:
@@ -30,3 +36,12 @@ class BirdTranslator:
 
     def check_consistency(self, ground_truth_ebird: str, predicted_xcl: int) -> bool:
         return self.xcl2ebird(predicted_xcl) == ground_truth_ebird
+
+    def check_topk_consistency(self, ground_truth_ebird: str, predicted_xcl_indices: List[int]) -> bool:
+        return any(self.xcl2ebird(idx) == ground_truth_ebird for idx in predicted_xcl_indices)
+
+    def check_family_consistency(self, ground_truth_ebird: str, predicted_xcm: int, taxonomy: TaxonomyMapper) -> bool:
+        predicted_ebird = self.xcl2ebird(predicted_xcm)
+        if predicted_ebird is None:
+            return False
+        return taxonomy.same_family(ground_truth_ebird, predicted_ebird)

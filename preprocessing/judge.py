@@ -2,9 +2,10 @@ import torch
 import torch.nn.functional as F
 import torchaudio.transforms as T
 from typing import Dict
-from transformers import EfficientNetForImageClassification
+from transformers import EfficientNetForImageClassification, ConvNextForImageClassification
 
 from config import (
+    DEVICE,
     SAMPLE_RATE,
     N_FFT,
     HOP_LENGTH,
@@ -12,13 +13,12 @@ from config import (
     SPEC_MEAN,
     SPEC_STD,
     MODEL_CHECKPOINT,
+    NUM_XCL_CLASSES,
 )
-
-NUM_XCL_CLASSES = 9736
 
 
 class SpectrogramTransform:
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = DEVICE):
         self.device = device
 
         self.spectrogram = T.Spectrogram(
@@ -37,15 +37,15 @@ class SpectrogramTransform:
 
     def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
         waveform = waveform.to(self.device)
-        spec = self.spectrogram(waveform)           # (B, freq, time)
-        mel_spec = self.mel_scale(spec)             # (B, n_mels, time)
-        log_mel = self.amplitude_to_db(mel_spec)    # (B, n_mels, time)
+        spec = self.spectrogram(waveform)
+        mel_spec = self.mel_scale(spec)
+        log_mel = self.amplitude_to_db(mel_spec)
 
         log_mel = log_mel.unsqueeze(1)
 
         log_mel = F.interpolate(
             log_mel,
-            size=(256, 417),
+            size=(128, 334),
             mode="bilinear",
             align_corners=False,
         )
@@ -58,26 +58,31 @@ class BirdClassifier:
     def __init__(
         self,
         checkpoint: str = MODEL_CHECKPOINT,
-        device: str = "cuda",
+        device: str = DEVICE,
     ):
-        self.model = EfficientNetForImageClassification.from_pretrained(
+        self.model = ConvNextForImageClassification.from_pretrained(
             checkpoint,
-            num_labels=NUM_XCL_CLASSES,
-            num_channels=1,
+            # num_labels=NUM_XCL_CLASSES,
+            # num_channels=1,
             ignore_mismatched_sizes=True,
         ).to(device).eval()
         self.preprocessor = SpectrogramTransform(device=device)
 
     @torch.inference_mode()
-    def evaluate(self, audio_tensor: torch.Tensor) -> Dict[str, torch.Tensor]:
-        spec = self.preprocessor(audio_tensor)  # (B, 1, 256, 417)
+    def evaluate(self, audio_tensor: torch.Tensor, top_k: int = 2) -> Dict[str, torch.Tensor]:
+        spec = self.preprocessor(audio_tensor)  # (B, 1, 128, 334)
 
         outputs = self.model(spec)
         probs = F.softmax(outputs.logits, dim=-1)
 
-        top2 = torch.topk(probs, k=2, dim=-1)
+        topk = torch.topk(probs, k=max(top_k, 2), dim=-1)
+        entropy = -(probs * probs.clamp(min=1e-9).log()).sum(dim=-1)
+
         return {
-            "top1_prob": top2.values[:, 0],
-            "top2_prob": top2.values[:, 1],
-            "top1_class": top2.indices[:, 0],
+            "topk_probs": topk.values,
+            "topk_classes": topk.indices,
+            "entropy": entropy,
+            "top1_prob": topk.values[:, 0],
+            "top2_prob": topk.values[:, 1],
+            "top1_class": topk.indices[:, 0],
         }

@@ -2,7 +2,7 @@ import json
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
-from typing import Dict, List
+from typing import Dict, List, Union
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 
@@ -12,10 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.audio_utils import SegmentDataset, get_all_segments
 from utils.logging_utils import setup_logger
-from config import PipelineConfig, GatingConfig
+from config import PipelineConfig, GatingConfig, RelaxedPipelineConfig, RelaxedGatingConfig
 from preprocessing.judge import BirdClassifier
 from preprocessing.gating import GatingStrategy
+from preprocessing.relaxed_gating import RelaxedGatingStrategy
 from preprocessing.code_translator import BirdTranslator
+from preprocessing.taxonomy import TaxonomyMapper
 
 
 logger = setup_logger("preprocessing_pipeline")
@@ -24,13 +26,15 @@ logger = setup_logger("preprocessing_pipeline")
 def classify_and_gate_segments(
     segments_info: List[Dict],
     judge: BirdClassifier,
-    gating: GatingStrategy,
+    gating: Union[GatingStrategy, RelaxedGatingStrategy],
     batch_size: int,
     num_workers: int = 4,
+    top_k: int = 2,
 ) -> Dict:
     passed_segments = []
     failed_segments = []
     passed_probs = []
+    passed_entropies = []
 
     dataset = SegmentDataset(segments_info)
     loader = DataLoader(
@@ -43,7 +47,7 @@ def classify_and_gate_segments(
     )
 
     for audio_batch, indices in tqdm(loader, desc="Evaluating (raw)"):
-        metrics = judge.evaluate(audio_batch)
+        metrics = judge.evaluate(audio_batch, top_k=top_k)
         batch_info = [segments_info[i] for i in indices]
         batch_labels = [s["ground_truth_ebird"] for s in batch_info]
         passed_mask = gating.process_batch(metrics, ground_truth_labels=batch_labels)
@@ -52,10 +56,12 @@ def classify_and_gate_segments(
             seg_copy = seg_info.copy()
             seg_copy["top1_prob"] = float(metrics["top1_prob"][i].item())
             seg_copy["top2_prob"] = float(metrics["top2_prob"][i].item())
+            seg_copy["entropy"] = float(metrics["entropy"][i].item())
             seg_copy["predicted_class"] = int(metrics["top1_class"][i].item())
             if passed:
                 passed_segments.append(seg_copy)
                 passed_probs.append(seg_copy["top1_prob"])
+                passed_entropies.append(seg_copy["entropy"])
             else:
                 failed_segments.append(seg_copy)
 
@@ -67,7 +73,8 @@ def classify_and_gate_segments(
         "total": total,
         "num_passed": num_passed,
         "retention_rate": num_passed / total if total > 0 else 0,
-        "mean_confidence": float(np.mean(passed_probs)) if passed_probs else 0.0
+        "mean_confidence": float(np.mean(passed_probs)) if passed_probs else 0.0,
+        "mean_entropy": float(np.mean(passed_entropies)) if passed_entropies else 0.0,
     }
 
 
@@ -164,6 +171,51 @@ def filter_segments(config: PipelineConfig = None) -> Dict:
     }
 
 
+def filter_segments_relaxed(config: RelaxedPipelineConfig = None) -> Dict:
+    output_dir = Path(config.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info("Initializing relaxed pipeline...")
+    judge = BirdClassifier(checkpoint=config.model_checkpoint, device=config.device)
+    translator = BirdTranslator(load_metadata=True)
+    taxonomy = TaxonomyMapper(cache_path=config.taxonomy_cache)
+    gating = RelaxedGatingStrategy(config=config.gating, translator=translator, taxonomy=taxonomy)
+
+    full_dataset = load_dataset("DBD-research-group/BirdSet", "XCM", split="train", trust_remote_code=True)
+    segments_info = scan_dataset_segments(full_dataset, config.min_samples_per_class)
+
+    results = classify_and_gate_segments(
+        segments_info=segments_info,
+        judge=judge,
+        gating=gating,
+        batch_size=config.batch_size,
+        num_workers=config.num_workers,
+        top_k=config.gating.top_k,
+    )
+
+    stats = {
+        "total_segments": results["total"],
+        "passed_segments": results["num_passed"],
+        "failed_segments": results["total"] - results["num_passed"],
+        "retention_rate": results["retention_rate"],
+        "mean_confidence": results["mean_confidence"],
+        "mean_entropy": results["mean_entropy"],
+        "min_samples_per_class": config.min_samples_per_class,
+        "config": {
+            "top_k": config.gating.top_k,
+            "max_entropy": config.gating.max_entropy,
+        },
+    }
+
+    save_filter_results(output_dir, stats, results["passed_segments"], results["failed_segments"])
+
+    return {
+        "passed": results["passed_segments"],
+        "failed": results["failed_segments"],
+        "stats": stats,
+    }
+
+
 def save_splits(filtered_dir: Path, splits: Dict[str, List[Dict]]) -> None:
     for split_name, split_data in splits.items():
         split_path = filtered_dir / f"{split_name}_segments.json"
@@ -213,74 +265,53 @@ def create_filtered_splits(
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--confidence-threshold", type=float, default=0.7,
-                        help="Gate 1: Minimum top-1 probability (default: 0.7)")
-    parser.add_argument("--singularity-ratio", type=float, default=2.0,
-                        help="Gate 2: Minimum top1/top2 ratio (default: 2.0)")
-    parser.add_argument("--no-label-match", action="store_true",
-                        help="Disable Gate 3 (label verification)")
-    parser.add_argument("--batch-size", type=int, default=64,
-                        help="Batch size for inference (default: 64)")
-    parser.add_argument("--num-workers", type=int, default=4,
-                        help="DataLoader workers for parallel audio I/O (default: 4)")
-    parser.add_argument("--device", default="cuda",
-                        help="Device for inference (default: cuda)")
-    parser.add_argument("--output-dir", default="data/filtered",
-                        help="Output directory for filtered data")
-    parser.add_argument("--limit", type=int, default=None,
-                        help="Limit number of segments (for testing)")
-    parser.add_argument("--create-splits", action="store_true",
-                        help="Create train/val/test splits after filtering")
-    parser.add_argument("--splits-only", action="store_true",
-                        help="Only create splits from existing filtered data")
-    parser.add_argument("--val-ratio", type=float, default=0.2,
-                        help="Validation set ratio (default: 0.2)")
-    parser.add_argument("--test-ratio", type=float, default=0.2,
-                        help="Test set ratio (default: 0.2)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed (default: 42)")
-    
+    parser.add_argument("--mode", choices=["strict", "relaxed"], default="strict")
+    parser.add_argument("--create-splits", action="store_true")
+    parser.add_argument("--splits-only", action="store_true")
     args = parser.parse_args()
 
     if args.splits_only:
-        logger.info("Creating splits from existing filtered data...")
+        config = RelaxedPipelineConfig() if args.mode == "relaxed" else PipelineConfig()
+        logger.info(f"Creating splits from existing filtered data at {config.output_dir}...")
         create_filtered_splits(
-            filtered_dir=args.output_dir,
-            val_ratio=args.val_ratio,
-            test_ratio=args.test_ratio,
-            seed=args.seed,
+            filtered_dir=config.output_dir,
+            val_ratio=config.val_ratio,
+            test_ratio=config.test_ratio,
+            seed=config.seed,
         )
+    elif args.mode == "relaxed":
+        config = RelaxedPipelineConfig()
+        logger.info(
+            f"Running RELAXED pipeline: top_k={config.gating.top_k}, "
+            f"max_entropy={config.gating.max_entropy}, "
+            f"min_samples_per_class={config.min_samples_per_class}"
+        )
+        results = filter_segments_relaxed(config)
+
+        if args.create_splits:
+            logger.info("Creating train/val/test splits...")
+            create_filtered_splits(
+                filtered_dir=config.output_dir,
+                val_ratio=config.val_ratio,
+                test_ratio=config.test_ratio,
+                seed=config.seed,
+            )
     else:
-        gating_config = GatingConfig(
-            confidence_threshold=args.confidence_threshold,
-            singularity_ratio=args.singularity_ratio,
-            require_label_match=not args.no_label_match,
+        config = PipelineConfig()
+        logger.info(
+            f"Running STRICT pipeline: confidence>{config.gating.confidence_threshold}, "
+            f"singularity>{config.gating.singularity_ratio}, "
+            f"label_match={config.gating.require_label_match}"
         )
-
-        config = PipelineConfig(
-            gating=gating_config,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            device=args.device,
-            output_dir=args.output_dir,
-            val_ratio=args.val_ratio,
-            test_ratio=args.test_ratio,
-            seed=args.seed,
-        )
-
-        logger.info(f"Running pipeline with: confidence>{args.confidence_threshold}, "
-                    f"singularity>{args.singularity_ratio}, "
-                    f"label_match={not args.no_label_match}")
-
         results = filter_segments(config)
 
         if args.create_splits:
             logger.info("Creating train/val/test splits...")
             create_filtered_splits(
-                filtered_dir=args.output_dir,
-                val_ratio=args.val_ratio,
-                test_ratio=args.test_ratio,
-                seed=args.seed,
+                filtered_dir=config.output_dir,
+                val_ratio=config.val_ratio,
+                test_ratio=config.test_ratio,
+                seed=config.seed,
             )
