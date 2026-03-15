@@ -1,4 +1,3 @@
-import argparse
 import numpy as np
 import torch
 import torchaudio
@@ -8,10 +7,14 @@ from snac import SNAC
 from utils.logging_utils import setup_logger
 from utils.mapping_utils import load_ebird_mapping
 from config import (
+    DEVICE,
+    FILTERED_DIR,
     SNAC_MODEL,
     SAMPLE_RATE,
     CODEBOOK_SIZE,
     MAX_SEQ_LEN,
+    SNAC_GEN_TEMPERATURE,
+    SNAC_GEN_TOP_K,
 )
 from model import (
     create_gpt2_model,
@@ -45,7 +48,6 @@ def generate_audio_samples(
     temperature=1.0,
     top_k=50,
 ):
-    """Generate one audio sample per class_id, returning (name, np_audio, sr) tuples."""
     was_training = model.training
     samples = []
     for class_id in class_ids:
@@ -114,30 +116,26 @@ def load_generation_models(
 
 
 def main():
+    import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to model checkpoint")
-    parser.add_argument("--output", type=str, default="generated", help="Output directory for audio files")
-    parser.add_argument("--filtered-dir", type=str, default="data/filtered",
-                        help="Dir with segment JSONs (fallback if checkpoint lacks ebird_to_id)")
-    parser.add_argument("--class-id", type=int, default=None, help="Bird class ID")
-    parser.add_argument("--class-name", type=str, default=None, help="Bird species ebird code (e.g. gretit1)")
-    parser.add_argument("--num-samples", type=int, default=1, help="Number of samples to generate")
-    parser.add_argument("--temperature", type=float, default=1.0, help="Sampling temperature")
-    parser.add_argument("--top-k", type=int, default=50, help="Top-k sampling")
-    parser.add_argument("--max-length", type=int, default=MAX_SEQ_LEN, help="Max sequence length")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--list-classes", action="store_true", help="List all available bird classes and exit")
+    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--output", type=str, default="generated")
+    parser.add_argument("--class-id", type=int, default=None)
+    parser.add_argument("--class-name", type=str, default=None)
+    parser.add_argument("--num-samples", type=int, default=1)
+    parser.add_argument("--list-classes", action="store_true")
     args = parser.parse_args()
 
-    device = torch.device(args.device)
+    device = torch.device(DEVICE)
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     result = load_generation_models(
         checkpoint_path=args.checkpoint,
         device=device,
-        filtered_dir=args.filtered_dir,
-        max_length=args.max_length,
+        filtered_dir=FILTERED_DIR,
+        max_length=MAX_SEQ_LEN,
         list_classes=args.list_classes,
     )
     if result is None:
@@ -169,26 +167,24 @@ def main():
         tokens = generate_tokens(
             model, device,
             class_id=sample_class,
-            max_length=args.max_length,
-            temperature=args.temperature,
-            top_k=args.top_k,
+            max_length=MAX_SEQ_LEN,
+            temperature=SNAC_GEN_TEMPERATURE,
+            top_k=SNAC_GEN_TOP_K,
         )
 
         snac_codes = extract_snac_codes(tokens)
         logger.info(f"  Generated {len(snac_codes)} SNAC tokens ({len(tokens)} total)")
-    
+
         if len(snac_codes) < 15:
             logger.warning(f"  Too few tokens to decode, skipping")
             continue
 
         audio = decode_to_audio(snac_codes, snac_model, device)
 
-        filename = f"{class_name}_step{step}_t{args.temperature}_{i:03d}.wav"
+        filename = f"{class_name}_step{step}_t{SNAC_GEN_TEMPERATURE}_{i:03d}.wav"
         filepath = output_dir / filename
         torchaudio.save(str(filepath), torch.from_numpy(audio).unsqueeze(0), SAMPLE_RATE)
         logger.info(f"  Saved: {filepath} ({len(audio)/SAMPLE_RATE:.2f}s)")
-
-    logger.info("Done.")
 
 
 if __name__ == "__main__":

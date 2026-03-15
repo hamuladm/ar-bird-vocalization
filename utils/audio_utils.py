@@ -6,15 +6,14 @@ import librosa
 from typing import Dict, List, Tuple
 from collections import defaultdict
 
-DEFAULT_SR = 32000
-DEFAULT_MAX_LENGTH = 5
+from config import SAMPLE_RATE, MAX_LENGTH
 
 
 def load_segment(
     filepath: str,
     start: float,
     end: float,
-    target_sr: int = DEFAULT_SR,
+    target_sr: int = SAMPLE_RATE,
 ) -> np.ndarray:
     info = sf.info(filepath)
     sr = info.samplerate
@@ -35,8 +34,8 @@ def load_audio_fixed_length(
     filepath: str,
     start: float,
     end: float,
-    target_sr: int = DEFAULT_SR,
-    max_length: int = DEFAULT_MAX_LENGTH,
+    target_sr: int = SAMPLE_RATE,
+    max_length: int = MAX_LENGTH,
 ) -> np.ndarray:
     audio = load_segment(filepath, start, end, target_sr=target_sr)
 
@@ -54,8 +53,8 @@ def load_audio_fixed_length(
 
 def load_and_pad_batch(
     tasks: List[Tuple[str, float, float]],
-    target_sr: int = DEFAULT_SR,
-    max_length: int = DEFAULT_MAX_LENGTH,
+    target_sr: int = SAMPLE_RATE,
+    max_length: int = MAX_LENGTH,
 ) -> torch.Tensor:
     arrays = [load_audio_fixed_length(fp, s, e, target_sr=target_sr, max_length=max_length) for fp, s, e in tasks]
     return torch.stack([torch.from_numpy(a).float() for a in arrays])
@@ -65,8 +64,8 @@ class SegmentDataset(Dataset):
     def __init__(
         self,
         segments_info: List[Dict],
-        target_sr: int = DEFAULT_SR,
-        max_length: int = DEFAULT_MAX_LENGTH,
+        target_sr: int = SAMPLE_RATE,
+        max_length: int = MAX_LENGTH,
     ):
         self.segments_info = segments_info
         self.target_sr = target_sr
@@ -89,14 +88,14 @@ def get_all_segments(item: dict) -> List[Tuple[float, float]]:
     if detected_events:
         return [(ev[0], ev[1]) for ev in detected_events]
     start = item.get("start_time", 0) or 0
-    end = item.get("end_time") or DEFAULT_MAX_LENGTH
+    end = item.get("end_time") or MAX_LENGTH
     return [(start, end)]
 
 
 def pack_segments(
     segments: List[Dict],
-    target_sr: int = DEFAULT_SR,
-    target_length: float = DEFAULT_MAX_LENGTH,
+    target_sr: int = SAMPLE_RATE,
+    target_length: float = MAX_LENGTH,
     seed: int = 42,
 ) -> List[Dict]:
     target_samples = int(target_sr * target_length)
@@ -149,8 +148,8 @@ class PackedSegmentDataset(Dataset):
         self,
         packing_plans: List[Dict],
         ebird_to_id: Dict[str, int],
-        target_sr: int = DEFAULT_SR,
-        target_length: float = DEFAULT_MAX_LENGTH,
+        target_sr: int = SAMPLE_RATE,
+        target_length: float = MAX_LENGTH,
     ):
         self.plans = packing_plans
         self.ebird_to_id = ebird_to_id
@@ -171,8 +170,8 @@ class PackedSegmentDataset(Dataset):
 
 def load_packed_sample(
     plan: Dict,
-    target_sr: int = DEFAULT_SR,
-    target_length: float = DEFAULT_MAX_LENGTH,
+    target_sr: int = SAMPLE_RATE,
+    target_length: float = MAX_LENGTH,
 ) -> np.ndarray:
     target_samples = int(target_sr * target_length)
     buf = np.zeros(target_samples, dtype=np.float32)

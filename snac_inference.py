@@ -10,7 +10,18 @@ from utils.logging_utils import setup_logger
 from utils.audio_utils import pack_segments
 from utils.mapping_utils import load_segments_and_mapping
 from utils.audio_utils import PackedSegmentDataset
-from config import SNAC_MODEL, CODEBOOK_SIZE, SAMPLE_RATE
+from config import (
+    DEVICE,
+    FILTERED_DIR,
+    MAX_LENGTH,
+    SEED,
+    SNAC_MODEL,
+    CODEBOOK_SIZE,
+    SAMPLE_RATE,
+    SNAC_INF_BATCH_SIZE,
+    SNAC_INF_NUM_WORKERS,
+    TOKEN_DIR,
+)
 
 logger = setup_logger("snac_inference")
 
@@ -73,10 +84,10 @@ def encode_split(
     output_dir: Path,
     model: SNAC,
     target_sr: int = SAMPLE_RATE,
-    target_length: float = 5,
-    device: str = "cuda",
-    batch_size: int = 32,
-    num_workers: int = 4,
+    target_length: float = MAX_LENGTH,
+    device: str = DEVICE,
+    batch_size: int = SNAC_INF_BATCH_SIZE,
+    num_workers: int = SNAC_INF_NUM_WORKERS,
 ):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -112,27 +123,22 @@ def encode_split(
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--filtered-dir", default="data/filtered", help="Dir with segment JSONs")
-    parser.add_argument("--output-dir", default="data/snac_tokens", help="Output dir for encoded tokens")
-    parser.add_argument("--split", choices=["train", "val", "test"], default="train", help="Split to encode")
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--num-workers", type=int, default=8)
+    parser.add_argument("--split", choices=["train", "val", "test"], default="train")
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    filtered_dir = Path(args.filtered_dir)
+    filtered_dir = Path(FILTERED_DIR)
     segments, ebird_to_id = load_segments_and_mapping(filtered_dir, args.split, args.limit)
 
     logger.info(f"Planning packing for {len(segments)} segments into 5s chunks by class...")
-    plans = pack_segments(segments, target_sr=SAMPLE_RATE, target_length=5, seed=args.seed)
+    plans = pack_segments(segments, target_sr=SAMPLE_RATE, target_length=5, seed=SEED)
     logger.info(f"Planned {len(plans)} training samples (audio loaded lazily)")
 
-    model = SNAC.from_pretrained(SNAC_MODEL).eval().to(args.device)
+    model = SNAC.from_pretrained(SNAC_MODEL).eval().to(DEVICE)
 
-    output_dir = Path(args.output_dir) / args.split
+    output_dir = Path(TOKEN_DIR) / args.split
     encode_split(
         packing_plans=plans,
         ebird_to_id=ebird_to_id,
@@ -140,9 +146,9 @@ def main():
         model=model,
         target_sr=SAMPLE_RATE,
         target_length=5,
-        device=args.device,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        device=DEVICE,
+        batch_size=SNAC_INF_BATCH_SIZE,
+        num_workers=SNAC_INF_NUM_WORKERS,
     )
 
 

@@ -212,3 +212,5 @@ audio/
 checkpoints/
 generated/
 wandb/
+test_data/
+data_vast/

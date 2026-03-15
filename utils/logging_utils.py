@@ -3,8 +3,10 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+from config import LOG_DIR
 
-def setup_logger(name: str, log_dir: str = "logs", level: int = logging.INFO) -> logging.Logger:
+
+def setup_logger(name: str, log_dir: str = LOG_DIR, level: int = logging.INFO) -> logging.Logger:
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     
