@@ -214,3 +214,4 @@ generated/
 wandb/
 test_data/
 data_vast/
+data_relaxed/

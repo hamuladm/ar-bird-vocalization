@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from snac import SNAC
 
 from utils.logging_utils import setup_logger
-from utils.audio_utils import pack_segments
+from utils.audio_utils import bin_pack_segments
 from utils.mapping_utils import load_segments_and_mapping
 from utils.audio_utils import PackedSegmentDataset
 from config import (
@@ -133,7 +133,7 @@ def main():
     segments, ebird_to_id = load_segments_and_mapping(filtered_dir, args.split, args.limit)
 
     logger.info(f"Planning packing for {len(segments)} segments into 5s chunks by class...")
-    plans = pack_segments(segments, target_sr=SAMPLE_RATE, target_length=5, seed=SEED)
+    plans = bin_pack_segments(segments, target_length=5, seed=SEED)
     logger.info(f"Planned {len(plans)} training samples (audio loaded lazily)")
 
     model = SNAC.from_pretrained(SNAC_MODEL).eval().to(DEVICE)

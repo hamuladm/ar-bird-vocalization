@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from audiocraft.models import AudioGen
 
 from utils.logging_utils import setup_logger
-from utils.audio_utils import pack_segments, PackedSegmentDataset
+from utils.audio_utils import bin_pack_segments, PackedSegmentDataset
 from utils.mapping_utils import load_segments_and_mapping
 from config import (
     DEVICE,
@@ -96,8 +96,8 @@ def main():
     logger.info(
         f"Packing {len(segments)} segments into {AG_TARGET_LENGTH}s chunks by class..."
     )
-    plans = pack_segments(
-        segments, target_sr=AG_SAMPLE_RATE, target_length=AG_TARGET_LENGTH, seed=SEED
+    plans = bin_pack_segments(
+        segments, target_length=AG_TARGET_LENGTH, seed=SEED
     )
     logger.info(f"Planned {len(plans)} training samples")
 
