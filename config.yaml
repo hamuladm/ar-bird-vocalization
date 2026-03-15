@@ -1,3 +1,5 @@
+device: "cuda"
+
 audio:
   sample_rate: 32000
   max_length: 5
@@ -7,12 +9,20 @@ snac:
   codebook_size: 4096
   n_levels: 4
 
-# Reference: https://github.com/DBD-research-group/BirdSet/blob/main/birdset/modules/models/birdset_models/efficientnet_bs.py
+  generation:
+    temperature: 1.0
+    top_k: 50
+
+  inference:
+    batch_size: 32
+    num_workers: 8
+
+# Reference: https://huggingface.co/DBD-research-group/ConvNeXT-Base-BirdSet-XCL
 filtering:
-  model_checkpoint: "DBD-research-group/EfficientNet-B1-BirdSet-XCL"
-  n_fft: 2048
-  hop_length: 256
-  n_mels: 256
+  model_checkpoint: "DBD-research-group/ConvNeXT-Base-BirdSet-XCL"
+  n_fft: 1024
+  hop_length: 320
+  n_mels: 128
   spec_mean: -4.268
   spec_std: 4.569
   confidence_threshold: 0.7
@@ -20,17 +30,34 @@ filtering:
   require_label_match: true
   batch_size: 64
   num_workers: 8
+  num_xcl_classes: 9736
   min_samples_per_class: 200
   output_dir: "data/filtered"
 
+taxonomy:
+  api_url: "https://api.ebird.org/v2/ref/taxonomy/ebird?fmt=csv"
+  cache_path: "data/taxonomy/ebird_taxonomy.csv"
+
+logging:
+  log_dir: "logs"
+
+relaxed_filtering:
+  top_k: 5
+  max_entropy: 4.0
+  min_samples_per_class: 20
+  output_dir: "data/relaxed_filtered"
+  batch_size: 128
+  num_workers: 16
+  taxonomy_cache: "data/taxonomy/ebird_taxonomy.csv"
+
 data:
   token_dir: "data/snac_tokens"
-  val_ratio: 0.2
-  test_ratio: 0.2
+  val_ratio: 0.05
+  test_ratio: 0.05
   seed: 42
 
 training:
-  epochs: 100
+  epochs: 10
   batch_size: 8
   learning_rate: 1.0e-4
   warmup_steps: 1000
@@ -47,3 +74,43 @@ model:
 wandb:
   wandb_project: "ar-bird-vocalization"
   wandb_entity: "hamula-dm-ukrainian-catholic-university"
+
+audiogen:
+  pretrained: "facebook/audiogen-medium"
+  sample_rate: 16000
+  target_length: 10              # seconds per training clip
+  save_dir: "checkpoints/audiogen"
+  num_workers: 8
+  grad_accum: 1
+
+  encodec_tokens:
+    relaxed_dir: "data/relaxed_encodec_tokens"
+    strict_dir: "data/strict_encodec_tokens"
+
+  encodec_inference:
+    batch_size: 32
+    num_workers: 8
+
+  stage1:
+    epochs: 20
+    batch_size: 8
+    learning_rate: 1.0e-3
+    warmup_steps: 100
+
+  stage2:
+    epochs: 50
+    batch_size: 4
+    learning_rate: 1.0e-4
+    warmup_steps: 1000
+
+  stage3:
+    epochs: 50
+    batch_size: 4
+    learning_rate: 5.0e-5
+    warmup_steps: 500
+
+  generation:
+    duration: 5.0
+    temperature: 1.0
+    top_k: 250
+    cfg_coef: 3.0
