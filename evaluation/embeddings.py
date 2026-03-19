@@ -1,35 +1,51 @@
-from pathlib import Path
-from typing import Sequence
-
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torchaudio
+from pathlib import Path
 from transformers import ConvNextForImageClassification
 
-
-from preprocessing.judge import SpectrogramTransform
-from utils.audio_utils import load_segment
-from utils.logging_utils import setup_logger
-from config import DEVICE, SAMPLE_RATE, MODEL_CHECKPOINT
-
-logger = setup_logger("eval_embeddings")
+from config import (
+    DEVICE,
+    EVAL_SAMPLE_RATE,
+    EVAL_MODEL_CHECKPOINT,
+    EVAL_N_FFT,
+    EVAL_HOP_LENGTH,
+    EVAL_N_MELS,
+    EVAL_SPEC_MEAN,
+    EVAL_SPEC_STD,
+)
+from utils.audio import load_segment
 
 AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
 
 
-class EvalEmbedder:
-    def __init__(
-        self,
-        checkpoint: str = MODEL_CHECKPOINT,
-        device: str = DEVICE,
-    ):
+class SpectrogramTransform:
+    def __init__(self, device=DEVICE):
+        self.device = device
+        self.mel = torchaudio.transforms.MelSpectrogram(
+            sample_rate=EVAL_SAMPLE_RATE,
+            n_fft=EVAL_N_FFT,
+            hop_length=EVAL_HOP_LENGTH,
+            n_mels=EVAL_N_MELS,
+        ).to(device)
 
+    def __call__(self, waveform):
+        spec = self.mel(waveform.to(self.device))
+        spec = torch.log(spec.clamp(min=1e-10))
+        spec = (spec - EVAL_SPEC_MEAN) / EVAL_SPEC_STD
+        spec = spec.unsqueeze(1).expand(-1, 3, -1, -1)
+        return F.interpolate(
+            spec, size=(224, 224), mode="bilinear", align_corners=False
+        )
+
+
+class EvalEmbedder:
+    def __init__(self, checkpoint=EVAL_MODEL_CHECKPOINT, device=DEVICE):
         self.device = device
         self.model = (
             ConvNextForImageClassification.from_pretrained(
-                checkpoint,
-                ignore_mismatched_sizes=True,
+                checkpoint, ignore_mismatched_sizes=True
             )
             .to(device)
             .eval()
@@ -37,7 +53,7 @@ class EvalEmbedder:
         self.preprocessor = SpectrogramTransform(device=device)
 
     @torch.inference_mode()
-    def extract(self, waveforms: torch.Tensor) -> dict[str, torch.Tensor]:
+    def extract(self, waveforms):
         spec = self.preprocessor(waveforms)
         backbone_out = self.model.convnext(spec)
         features = backbone_out.pooler_output
@@ -46,24 +62,22 @@ class EvalEmbedder:
         return {"probs": probs, "features": features}
 
 
-def _collect_audio_paths(directory: str | Path) -> list[Path]:
-    directory = Path(directory)
-    paths = sorted(
-        p for p in directory.rglob("*") if p.suffix.lower() in AUDIO_EXTENSIONS
+def _collect_audio_paths(directory):
+    return sorted(
+        p for p in Path(directory).rglob("*") if p.suffix.lower() in AUDIO_EXTENSIONS
     )
-    return paths
 
 
-def _load_and_resample(path: Path) -> torch.Tensor:
+def _load_and_resample(path):
     waveform, sr = torchaudio.load(str(path))
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
-    if sr != SAMPLE_RATE:
-        waveform = torchaudio.functional.resample(waveform, sr, SAMPLE_RATE)
+    if sr != EVAL_SAMPLE_RATE:
+        waveform = torchaudio.functional.resample(waveform, sr, EVAL_SAMPLE_RATE)
     return waveform.squeeze(0)
 
 
-def _collate_waveforms(waveforms: list[torch.Tensor]) -> torch.Tensor:
+def _collate_waveforms(waveforms):
     max_len = max(w.shape[0] for w in waveforms)
     batch = torch.zeros(len(waveforms), max_len)
     for i, w in enumerate(waveforms):
@@ -71,54 +85,16 @@ def _collate_waveforms(waveforms: list[torch.Tensor]) -> torch.Tensor:
     return batch
 
 
-def extract_embeddings_from_directory(
-    directory: str | Path,
-    embedder: EvalEmbedder,
-    batch_size: int = 32,
-) -> dict[str, np.ndarray]:
-    paths = _collect_audio_paths(directory)
-
+def _extract_batched(waveform_tensors, embedder, batch_size):
     all_probs = []
     all_features = []
 
-    for start in range(0, len(paths), batch_size):
-        batch_paths = paths[start : start + batch_size]
-        waveforms = [_load_and_resample(p) for p in batch_paths]
-        batch = _collate_waveforms(waveforms).to(embedder.device)
-
-        result = embedder.extract(batch)
-        all_probs.append(result["probs"].cpu().numpy())
-        all_features.append(result["features"].cpu().numpy())
-
-        processed = min(start + batch_size, len(paths))
-        logger.info(f"  Processed {processed}/{len(paths)} files")
-
-    return {
-        "probs": np.concatenate(all_probs, axis=0),
-        "features": np.concatenate(all_features, axis=0),
-    }
-
-
-def _extract_batched(
-    waveform_tensors: list[torch.Tensor],
-    embedder: EvalEmbedder,
-    batch_size: int,
-    label: str,
-) -> dict[str, np.ndarray]:
-    all_probs = []
-    all_features = []
-    total = len(waveform_tensors)
-
-    for start in range(0, total, batch_size):
+    for start in range(0, len(waveform_tensors), batch_size):
         batch_wavs = waveform_tensors[start : start + batch_size]
         batch = _collate_waveforms(batch_wavs).to(embedder.device)
-
         result = embedder.extract(batch)
         all_probs.append(result["probs"].cpu().numpy())
         all_features.append(result["features"].cpu().numpy())
-
-        processed = min(start + batch_size, total)
-        logger.info(f"  [{label}] Processed {processed}/{total}")
 
     return {
         "probs": np.concatenate(all_probs, axis=0),
@@ -126,27 +102,22 @@ def _extract_batched(
     }
 
 
-def extract_embeddings_from_segments(
-    segments: list[dict],
-    embedder: EvalEmbedder,
-    batch_size: int = 32,
-) -> dict[str, np.ndarray]:
+def extract_embeddings_from_directory(directory, embedder, batch_size=32):
+    paths = _collect_audio_paths(directory)
+    waveforms = [_load_and_resample(p) for p in paths]
+    return _extract_batched(waveforms, embedder, batch_size)
+
+
+def extract_embeddings_from_segments(segments, embedder, batch_size=32):
     waveforms = []
     for seg in segments:
-        # TODO: Resolve this in a more sophisticated way
-        seg["filepath"] = seg["filepath"].replace(
-            "/workspace/.hf_home", "/home/dkham/.cache/huggingface"
+        audio_np = load_segment(
+            seg["filepath"], seg["start"], seg["end"], EVAL_SAMPLE_RATE
         )
-        audio_np = load_segment(seg["filepath"], seg["start"], seg["end"])
         waveforms.append(torch.from_numpy(audio_np).float())
+    return _extract_batched(waveforms, embedder, batch_size)
 
-    return _extract_batched(waveforms, embedder, batch_size, label="segments")
 
-
-def extract_embeddings_from_arrays(
-    arrays: Sequence[np.ndarray],
-    embedder: EvalEmbedder,
-    batch_size: int = 32,
-) -> dict[str, np.ndarray]:
+def extract_embeddings_from_arrays(arrays, embedder, batch_size=32):
     waveforms = [torch.from_numpy(a).float() for a in arrays]
-    return _extract_batched(waveforms, embedder, batch_size, label="generated")
+    return _extract_batched(waveforms, embedder, batch_size)
