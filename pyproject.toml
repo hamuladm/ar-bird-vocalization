@@ -23,5 +23,10 @@ dependencies = [
     "torchvision>=0.16.0",
     "tqdm>=4.67.1",
     "transformers>=4.57.3",
+    "boto3>=1.35.0",
     "wandb>=0.16.0",
+    "ruff>=0.15.7",
 ]
+
+[tool.ruff]
+exclude = [".venv", "BirdSet/", "Orpheus-TTS/"]
