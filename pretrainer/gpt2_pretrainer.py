@@ -65,7 +65,7 @@ class GPT2Pretrainer:
         )
 
         self.model = create_gpt2_model(
-            vocab_size=self.vocab_size, n_positions=MAX_SEQ_LEN
+            vocab_size=self.vocab_size
         ).to(self.device)
         self.snac_model = SNAC.from_pretrained(SNAC_MODEL).eval().to(self.device)
 
