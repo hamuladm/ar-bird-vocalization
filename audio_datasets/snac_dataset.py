@@ -4,7 +4,7 @@ from torch.utils.data import Dataset
 from pathlib import Path
 
 from config import MAX_SEQ_LEN
-from models.gpt2 import CLASS_TOKEN_OFFSET, BOS_TOKEN, EOS_TOKEN, PAD_TOKEN
+from models.backbone import CLASS_TOKEN_OFFSET, BOS_TOKEN, EOS_TOKEN, PAD_TOKEN
 
 
 class SNACTokenDataset(Dataset):
