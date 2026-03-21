@@ -1,5 +1,5 @@
 import torch
-from transformers import GPT2Config, GPT2LMHeadModel
+from transformers import GPT2Config, GPT2LMHeadModel, LlamaConfig, LlamaForCausalLM
 
 from config import (
     CODEBOOK_SIZE,
@@ -9,6 +9,8 @@ from config import (
     N_LAYER,
     N_HEAD,
     N_POSITIONS,
+    BACKBONE,
+    INTERMEDIATE_SIZE,
 )
 
 SNAC_VOCAB_SIZE = SNAC_N_LEVELS * CODEBOOK_SIZE
@@ -32,6 +34,53 @@ def create_gpt2_model(
         pad_token_id=PAD_TOKEN,
     )
     return GPT2LMHeadModel(gpt2_config)
+
+
+def _default_intermediate_size(n_embd):
+    """SwiGLU-adjusted FFN size, rounded to nearest 256."""
+    raw = int(2 * (4 * n_embd) / 3)
+    return ((raw + 255) // 256) * 256
+
+
+def create_llama_model(
+    vocab_size,
+    n_positions=N_POSITIONS,
+    n_embd=N_EMBD,
+    n_layer=N_LAYER,
+    n_head=N_HEAD,
+    intermediate_size=INTERMEDIATE_SIZE,
+):
+    if intermediate_size is None:
+        intermediate_size = _default_intermediate_size(n_embd)
+
+    llama_config = LlamaConfig(
+        vocab_size=vocab_size,
+        hidden_size=n_embd,
+        intermediate_size=intermediate_size,
+        num_hidden_layers=n_layer,
+        num_attention_heads=n_head,
+        num_key_value_heads=n_head,
+        max_position_embeddings=n_positions,
+        bos_token_id=BOS_TOKEN,
+        eos_token_id=EOS_TOKEN,
+        pad_token_id=PAD_TOKEN,
+        tie_word_embeddings=True,
+    )
+    return LlamaForCausalLM(llama_config)
+
+
+_BACKBONE_CREATORS = {
+    "gpt2": create_gpt2_model,
+    "llama": create_llama_model,
+}
+
+
+def create_model(backbone=BACKBONE, **kwargs):
+    if backbone not in _BACKBONE_CREATORS:
+        raise ValueError(
+            f"Unknown backbone '{backbone}', choose from: {list(_BACKBONE_CREATORS)}"
+        )
+    return _BACKBONE_CREATORS[backbone](**kwargs)
 
 
 @torch.no_grad()

@@ -15,7 +15,7 @@ from config import (
     SNAC_GEN_TEMPERATURE,
     SNAC_GEN_TOP_K,
 )
-from models.gpt2 import create_gpt2_model, generate_tokens, extract_snac_codes
+from models.backbone import create_model, generate_tokens, extract_snac_codes
 from preprocessing.tokenize import unflatten_codes
 from utils.checkpoint import load_checkpoint
 
@@ -74,14 +74,33 @@ def generate_audio_samples(
     return samples
 
 
+_EMBEDDING_KEYS = {
+    "gpt2": "transformer.wte.weight",
+    "llama": "model.embed_tokens.weight",
+}
+
+
+def _infer_vocab_size(state_dict, backbone):
+    key = _EMBEDDING_KEYS.get(backbone)
+    if key and key in state_dict:
+        return state_dict[key].shape[0]
+    for k, v in state_dict.items():
+        if "embed" in k and "weight" in k and v.ndim == 2:
+            return v.shape[0]
+    raise RuntimeError("Cannot infer vocab_size from checkpoint weights")
+
+
 def load_generation_models(checkpoint_path, device, max_length=MAX_SEQ_LEN):
     ckpt = load_checkpoint(checkpoint_path, device=device)
 
     ebird_to_id = ckpt["ebird_to_id"]
     id_to_ebird = {i: c for c, i in ebird_to_id.items()}
-    vocab_size = ckpt["model_state_dict"]["transformer.wte.weight"].shape[0]
+    backbone = ckpt.get("backbone", "gpt2")
+    vocab_size = _infer_vocab_size(ckpt["model_state_dict"], backbone)
 
-    model = create_gpt2_model(vocab_size=vocab_size, n_positions=max_length)
+    model = create_model(
+        backbone=backbone, vocab_size=vocab_size, n_positions=max_length
+    )
     model.load_state_dict(ckpt["model_state_dict"])
     model = model.to(device).eval()
 

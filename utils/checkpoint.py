@@ -12,6 +12,7 @@ def save_checkpoint(
     ebird_to_id,
     val_loss=None,
     scheduler=None,
+    backbone="gpt2",
 ):
     state = {
         "epoch": epoch,
@@ -22,6 +23,7 @@ def save_checkpoint(
         "n_classes": n_classes,
         "ebird_to_id": ebird_to_id,
         "val_loss": val_loss,
+        "backbone": backbone,
     }
     if scheduler is not None:
         state["scheduler_state_dict"] = scheduler.state_dict()

@@ -50,10 +50,12 @@ PRETRAIN_NUM_WORKERS = _pretrain["num_workers"]
 PRETRAIN_SAVE_DIR = Path(_pretrain["save_dir"])
 
 _model = _raw["model"]
+BACKBONE = _model.get("backbone", "gpt2")
 N_EMBD = _model["n_embd"]
 N_LAYER = _model["n_layer"]
 N_HEAD = _model["n_head"]
 N_POSITIONS = _model["n_positions"]
+INTERMEDIATE_SIZE = _model.get("intermediate_size", None)
 
 _wandb = _raw["wandb"]
 WANDB_PROJECT = _wandb["project"]

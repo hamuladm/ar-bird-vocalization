@@ -32,15 +32,16 @@ pretrain:
   batch_size: 16
   learning_rate: 1.0e-4
   warmup_steps: 1000
-  max_seq_len: 1503
+  max_seq_len: 1620
   num_workers: 8
   save_dir: "checkpoints/gpt2"
 
 model:
+  backbone: "llama"
   n_embd: 768
   n_layer: 12
   n_head: 12
-  n_positions: 1536
+  n_positions: 1664
 
 wandb:
   project: "ar-bird-vocalization"

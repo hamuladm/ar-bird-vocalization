@@ -15,29 +15,35 @@ from config import (
     SNAC_MODEL,
     SEGMENT_DIR,
     TOKEN_DIR,
-    PRETRAIN_EPOCHS,
-    PRETRAIN_BATCH_SIZE,
-    PRETRAIN_LR,
-    PRETRAIN_WARMUP,
     MAX_SEQ_LEN,
     PRETRAIN_NUM_WORKERS,
-    PRETRAIN_SAVE_DIR,
     WANDB_PROJECT,
     WANDB_ENTITY,
+    BACKBONE,
 )
-from models.gpt2 import PAD_TOKEN, CLASS_TOKEN_OFFSET, create_gpt2_model
+from models.backbone import PAD_TOKEN, CLASS_TOKEN_OFFSET, create_model
 from audio_datasets.snac_dataset import SNACTokenDataset, snac_collate_fn
 from utils.checkpoint import save_checkpoint, load_checkpoint
 
 
-class GPT2Pretrainer:
+class GPT2Finetuner:
     def __init__(
-        self, resume=None, use_wandb=False, sample_class_ids=None, num_sample_classes=3
+        self,
+        epochs=50,
+        batch_size=4,
+        lr=5e-5,
+        warmup_steps=500,
+        resume=None,
+        load_from=None,
+        use_wandb=False,
+        sample_class_ids=None,
+        num_sample_classes=3,
     ):
         self.device = torch.device(DEVICE)
-        self.save_dir = Path(PRETRAIN_SAVE_DIR) / "gpt2"
+        self.save_dir = Path("checkpoints/gpt2_finetune")
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.use_wandb = use_wandb
+        self.epochs = epochs
 
         self.ebird_to_id = self._load_ebird_to_id()
         self.id_to_ebird = {i: c for c, i in self.ebird_to_id.items()}
@@ -49,7 +55,7 @@ class GPT2Pretrainer:
 
         self.train_loader = DataLoader(
             train_ds,
-            batch_size=PRETRAIN_BATCH_SIZE,
+            batch_size=batch_size,
             shuffle=True,
             collate_fn=snac_collate_fn,
             num_workers=PRETRAIN_NUM_WORKERS,
@@ -57,24 +63,29 @@ class GPT2Pretrainer:
         )
         self.val_loader = DataLoader(
             val_ds,
-            batch_size=PRETRAIN_BATCH_SIZE,
+            batch_size=batch_size,
             shuffle=False,
             collate_fn=snac_collate_fn,
             num_workers=PRETRAIN_NUM_WORKERS,
             pin_memory=True,
         )
 
-        self.model = create_gpt2_model(
-            vocab_size=self.vocab_size
+        self.backbone = BACKBONE
+        self.model = create_model(
+            backbone=self.backbone, vocab_size=self.vocab_size, n_positions=MAX_SEQ_LEN
         ).to(self.device)
         self.snac_model = SNAC.from_pretrained(SNAC_MODEL).eval().to(self.device)
 
+        if load_from:
+            ckpt = load_checkpoint(load_from, device=self.device)
+            self.model.load_state_dict(ckpt["model_state_dict"])
+
         self.optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=PRETRAIN_LR, weight_decay=0.01
+            self.model.parameters(), lr=lr, weight_decay=0.01
         )
-        total_steps = len(self.train_loader) * PRETRAIN_EPOCHS
+        total_steps = len(self.train_loader) * epochs
         self.scheduler = get_cosine_schedule_with_warmup(
-            self.optimizer, PRETRAIN_WARMUP, total_steps
+            self.optimizer, warmup_steps, total_steps
         )
 
         self.start_epoch = 1
@@ -171,15 +182,18 @@ class GPT2Pretrainer:
             self.ebird_to_id,
             val_loss=val_loss,
             scheduler=self.scheduler,
+            backbone=self.backbone,
         )
 
     def run(self):
         if self.use_wandb:
             wandb.init(
-                project=WANDB_PROJECT, entity=WANDB_ENTITY, tags=["gpt2", "pretrain"]
+                project=WANDB_PROJECT,
+                entity=WANDB_ENTITY,
+                tags=[self.backbone, "finetune"],
             )
 
-        for epoch in range(self.start_epoch, PRETRAIN_EPOCHS + 1):
+        for epoch in range(self.start_epoch, self.epochs + 1):
             train_loss = self.train_epoch(epoch)
             val_loss = self.validate_epoch()
             print(
@@ -226,13 +240,23 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--resume", type=str, default=None)
+    parser.add_argument("--load-from", type=str, default=None)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=5e-5)
+    parser.add_argument("--warmup-steps", type=int, default=500)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--sample-classes", type=int, nargs="*", default=None)
     parser.add_argument("--num-sample-classes", type=int, default=3)
     args = parser.parse_args()
 
-    GPT2Pretrainer(
+    GPT2Finetuner(
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        warmup_steps=args.warmup_steps,
         resume=args.resume,
+        load_from=args.load_from,
         use_wandb=args.wandb,
         sample_class_ids=args.sample_classes,
         num_sample_classes=args.num_sample_classes,
