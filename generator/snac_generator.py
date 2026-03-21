@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import torch
 import torchaudio
@@ -20,6 +22,20 @@ from utils.checkpoint import load_checkpoint
 
 def decode_to_audio(snac_codes, snac_model, device):
     code_arrays = unflatten_codes(snac_codes)
+
+    ws = snac_model.attn_window_size or 1
+    stride0 = snac_model.vq_strides[0]
+    align = ws // math.gcd(stride0, ws)
+    coarse_len = len(code_arrays[0])
+    coarse_len = (coarse_len // align) * align
+
+    code_arrays = [
+        code_arrays[0][:coarse_len],
+        code_arrays[1][: coarse_len * 2],
+        code_arrays[2][: coarse_len * 4],
+        code_arrays[3][: coarse_len * 8],
+    ]
+
     code_arrays = [np.clip(c, 0, CODEBOOK_SIZE - 1) for c in code_arrays]
     codes_torch = [
         torch.from_numpy(c).long().unsqueeze(0).to(device) for c in code_arrays
