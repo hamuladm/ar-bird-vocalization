@@ -63,9 +63,10 @@ class AudioGenFinetuner:
         B, K, T, card = output.logits.shape
         logits_flat = output.logits.reshape(-1, card)
         codes_flat = codes.reshape(-1)
-        mask_flat = output.mask.reshape(-1).float()
-        ce = F.cross_entropy(logits_flat, codes_flat, reduction="none")
-        return (ce * mask_flat).sum() / mask_flat.sum().clamp(min=1)
+        mask_flat = output.mask.reshape(-1)
+        valid = mask_flat.nonzero(as_tuple=True)[0]
+        ce = F.cross_entropy(logits_flat[valid], codes_flat[valid], reduction="none")
+        return ce.sum() / ce.numel()
 
     def _train_epoch(self, dataloader, optimizer, scheduler, epoch, grad_accum_steps=1):
         self.lm.train()
