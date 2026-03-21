@@ -2,12 +2,12 @@ import torch
 from torch import nn
 
 from audiocraft.models import AudioGen
-from audiocraft.modules.conditioners import BaseConditioner, ConditioningAttributes
+from audiocraft.modules.conditioners import TextConditioner, ConditioningAttributes
 
 from config import AG_PRETRAINED
 
 
-class SpeciesConditioner(BaseConditioner):
+class SpeciesConditioner(TextConditioner):
     def __init__(self, n_species, dim, output_dim):
         super().__init__(dim, output_dim)
         self.embed = nn.Embedding(n_species + 1, dim)
