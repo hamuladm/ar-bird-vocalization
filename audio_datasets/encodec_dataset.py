@@ -5,8 +5,6 @@ from pathlib import Path
 
 from models.audiogen import make_species_conditions
 
-ENCODEC_SPECIAL_TOKEN = 1024
-
 
 class EnCodecTokenDataset(Dataset):
     def __init__(self, split_dir, max_timesteps=None):
@@ -36,20 +34,22 @@ class EnCodecTokenDataset(Dataset):
         }
 
 
-def encodec_collate_fn(batch):
-    codes_list = [item["codes"] for item in batch]
-    species_ids = [item["species_id"] for item in batch]
+def make_encodec_collate_fn(special_token_id):
+    def encodec_collate_fn(batch):
+        codes_list = [item["codes"] for item in batch]
+        species_ids = [item["species_id"] for item in batch]
 
-    K = codes_list[0].shape[0]
-    max_t = max(c.shape[1] for c in codes_list)
+        K = codes_list[0].shape[0]
+        max_t = max(c.shape[1] for c in codes_list)
 
-    padded = torch.full((len(batch), K, max_t), ENCODEC_SPECIAL_TOKEN, dtype=torch.long)
-    for i, c in enumerate(codes_list):
-        padded[i, :, : c.shape[1]] = c
+        padded = torch.full((len(batch), K, max_t), special_token_id, dtype=torch.long)
+        for i, c in enumerate(codes_list):
+            padded[i, :, : c.shape[1]] = c
 
-    conditions = make_species_conditions(species_ids)
+        conditions = make_species_conditions(species_ids)
 
-    return {
-        "codes": padded,
-        "conditions": conditions,
-    }
+        return {
+            "codes": padded,
+            "conditions": conditions,
+        }
+    return encodec_collate_fn

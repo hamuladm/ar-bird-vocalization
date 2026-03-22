@@ -28,7 +28,7 @@ from models.audiogen import (
     save_lm_checkpoint,
     load_lm_checkpoint,
 )
-from audio_datasets.encodec_dataset import EnCodecTokenDataset, encodec_collate_fn
+from audio_datasets.encodec_dataset import EnCodecTokenDataset, make_encodec_collate_fn
 
 
 class AudioGenPretrainer:
@@ -64,9 +64,13 @@ class AudioGenPretrainer:
         logits_flat = output.logits.reshape(-1, card)
         codes_flat = codes.reshape(-1)
         mask_flat = output.mask.reshape(-1)
-        valid = mask_flat.nonzero(as_tuple=True)[0]
-        ce = F.cross_entropy(logits_flat[valid], codes_flat[valid], reduction="none")
-        return ce.sum() / ce.numel()
+
+        content_mask = codes_flat < card
+        valid = (mask_flat & content_mask).nonzero(as_tuple=True)[0]
+        if valid.numel() == 0:
+            return torch.tensor(0.0, device=codes.device, requires_grad=True)
+        ce = F.cross_entropy(logits_flat[valid], codes_flat[valid], reduction="mean")
+        return ce
 
     def _train_epoch(self, dataloader, optimizer, scheduler, epoch, grad_accum_steps=1):
         self.lm.train()
@@ -79,9 +83,8 @@ class AudioGenPretrainer:
             codes = batch["codes"].to(self.device)
             conditions = batch["conditions"]
 
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                loss = self._compute_loss(codes, conditions)
-                scaled_loss = loss / grad_accum_steps
+            loss = self._compute_loss(codes, conditions)
+            scaled_loss = loss / grad_accum_steps
 
             scaled_loss.backward()
 
@@ -114,8 +117,7 @@ class AudioGenPretrainer:
             codes = batch["codes"].to(self.device)
             conditions = batch["conditions"]
 
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                loss = self._compute_loss(codes, conditions)
+            loss = self._compute_loss(codes, conditions)
 
             total_loss += loss.item()
             n_steps += 1
@@ -133,6 +135,8 @@ class AudioGenPretrainer:
                 load_lm_checkpoint(last_checkpoint, self.lm, device=self.device)
             unfreeze_all(self.lm)
 
+        collate_fn = make_encodec_collate_fn(self.lm.special_token_id)
+
         train_ds = EnCodecTokenDataset(token_dir / "train")
         val_ds = EnCodecTokenDataset(token_dir / "val")
 
@@ -140,7 +144,7 @@ class AudioGenPretrainer:
             train_ds,
             batch_size=sc.batch_size,
             shuffle=True,
-            collate_fn=encodec_collate_fn,
+            collate_fn=collate_fn,
             num_workers=AG_NUM_WORKERS,
             pin_memory=True,
         )
@@ -148,7 +152,7 @@ class AudioGenPretrainer:
             val_ds,
             batch_size=sc.batch_size,
             shuffle=False,
-            collate_fn=encodec_collate_fn,
+            collate_fn=collate_fn,
             num_workers=AG_NUM_WORKERS,
             pin_memory=True,
         )
