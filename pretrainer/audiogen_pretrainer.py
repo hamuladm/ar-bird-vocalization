@@ -135,6 +135,8 @@ class AudioGenPretrainer:
                 load_lm_checkpoint(last_checkpoint, self.lm, device=self.device)
             unfreeze_all(self.lm)
 
+        self.lm.float()
+
         collate_fn = make_encodec_collate_fn(self.lm.special_token_id)
 
         train_ds = EnCodecTokenDataset(token_dir / "train")
