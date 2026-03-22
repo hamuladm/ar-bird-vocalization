@@ -1,4 +1,5 @@
 import json
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,6 +31,9 @@ from models.audiogen import (
 )
 from audio_datasets.encodec_dataset import EnCodecTokenDataset, make_encodec_collate_fn
 
+EVAL_EVERY = 10_000
+NUM_SAMPLE_CLASSES = 3
+
 
 class AudioGenPretrainer:
     def __init__(self, stage=None, resume=None, load_from=None, use_wandb=False):
@@ -40,6 +44,14 @@ class AudioGenPretrainer:
 
         self.ebird_to_id = self._load_ebird_to_id()
         self.n_species = len(self.ebird_to_id)
+        self.id_to_ebird = {i: c for c, i in self.ebird_to_id.items()}
+
+        rng = np.random.default_rng(42)
+        self.sample_class_ids = rng.choice(
+            self.n_species,
+            size=min(NUM_SAMPLE_CLASSES, self.n_species),
+            replace=False,
+        ).tolist()
 
         self.audiogen, self.species_cond = load_audiogen(
             self.n_species, device=str(self.device)
@@ -64,7 +76,6 @@ class AudioGenPretrainer:
         logits_flat = output.logits.reshape(-1, card)
         codes_flat = codes.reshape(-1)
         mask_flat = output.mask.reshape(-1)
-
         content_mask = codes_flat < card
         valid = (mask_flat & content_mask).nonzero(as_tuple=True)[0]
         if valid.numel() == 0:
@@ -72,57 +83,63 @@ class AudioGenPretrainer:
         ce = F.cross_entropy(logits_flat[valid], codes_flat[valid], reduction="mean")
         return ce
 
-    def _train_epoch(self, dataloader, optimizer, scheduler, epoch, grad_accum_steps=1):
-        self.lm.train()
-        total_loss = 0.0
-        n_steps = 0
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-
-        optimizer.zero_grad()
-        for step, batch in enumerate(pbar):
-            codes = batch["codes"].to(self.device)
-            conditions = batch["conditions"]
-
-            loss = self._compute_loss(codes, conditions)
-            scaled_loss = loss / grad_accum_steps
-
-            scaled_loss.backward()
-
-            if (step + 1) % grad_accum_steps == 0:
-                nn.utils.clip_grad_norm_(
-                    (p for p in self.lm.parameters() if p.requires_grad), 1.0
-                )
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
-
-            total_loss += loss.item()
-            n_steps += 1
-            pbar.set_postfix(
-                loss=f"{loss.item():.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}"
-            )
-
-            if wandb.run:
-                wandb.log({"train_loss": loss.item(), "lr": scheduler.get_last_lr()[0]})
-
-        return total_loss / max(n_steps, 1)
-
     @torch.no_grad()
-    def _validate_epoch(self, dataloader):
+    def _validate(self, dataloader):
         self.lm.eval()
         total_loss = 0.0
         n_steps = 0
-
         for batch in tqdm(dataloader, desc="Validation"):
             codes = batch["codes"].to(self.device)
             conditions = batch["conditions"]
-
             loss = self._compute_loss(codes, conditions)
-
             total_loss += loss.item()
             n_steps += 1
-
         return total_loss / max(n_steps, 1)
+
+    def _generate_samples(self):
+        from generator.audiogen_generator import generate_audio_samples
+        return generate_audio_samples(
+            self.audiogen, self.id_to_ebird, self.sample_class_ids,
+        )
+
+    def _eval_and_checkpoint(
+        self, val_loader, optimizer, scheduler, stage, stage_dir,
+        epoch, global_step, best_val_loss,
+    ):
+        val_loss = self._validate(val_loader)
+        print(f"Stage {stage} | Step {global_step}: val_loss={val_loss:.4f}")
+
+        log_dict = {
+            f"stage{stage}/val_loss": val_loss,
+            f"stage{stage}/global_step": global_step,
+        }
+
+        if wandb.run:
+            samples = self._generate_samples()
+            for name, audio, sr in samples:
+                log_dict[f"audio/{name}"] = wandb.Audio(
+                    audio, sample_rate=sr, caption=f"{name}_step{global_step}",
+                )
+            wandb.log(log_dict)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_lm_checkpoint(
+                stage_dir / "best_model.pt",
+                self.lm, optimizer, scheduler,
+                epoch, global_step, self.n_species, self.ebird_to_id,
+                val_loss, stage,
+            )
+
+        save_lm_checkpoint(
+            stage_dir / f"checkpoint_step_{global_step}.pt",
+            self.lm, optimizer, scheduler,
+            epoch, global_step, self.n_species, self.ebird_to_id,
+            val_loss, stage,
+        )
+
+        self.lm.train()
+        return best_val_loss
 
     def _run_stage(self, stage, last_checkpoint):
         sc = self.stage_configs[stage]
@@ -183,52 +200,49 @@ class AudioGenPretrainer:
         stage_dir.mkdir(parents=True, exist_ok=True)
 
         for epoch in range(start_epoch, sc.epochs + 1):
-            train_loss = self._train_epoch(
-                train_loader, optimizer, scheduler, epoch, AG_GRAD_ACCUM
-            )
-            global_step += len(train_loader)
-            val_loss = self._validate_epoch(val_loader)
-            print(
-                f"Stage {stage} | Epoch {epoch}: train_loss={train_loss:.4f}  val_loss={val_loss:.4f}"
-            )
+            self.lm.train()
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
+            optimizer.zero_grad()
 
-            if wandb.run:
-                wandb.log(
-                    {
-                        f"stage{stage}/train_loss_epoch": train_loss,
-                        f"stage{stage}/val_loss": val_loss,
-                        f"stage{stage}/epoch": epoch,
-                    }
+            for step, batch in enumerate(pbar):
+                codes = batch["codes"].to(self.device)
+                conditions = batch["conditions"]
+
+                loss = self._compute_loss(codes, conditions)
+                scaled_loss = loss / AG_GRAD_ACCUM
+                scaled_loss.backward()
+
+                if (step + 1) % AG_GRAD_ACCUM == 0:
+                    nn.utils.clip_grad_norm_(
+                        (p for p in self.lm.parameters() if p.requires_grad), 1.0
+                    )
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
+
+                global_step += 1
+                pbar.set_postfix(
+                    loss=f"{loss.item():.4f}",
+                    lr=f"{scheduler.get_last_lr()[0]:.2e}",
+                    step=global_step,
                 )
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                save_lm_checkpoint(
-                    stage_dir / "best_model.pt",
-                    self.lm,
-                    optimizer,
-                    scheduler,
-                    epoch,
-                    global_step,
-                    self.n_species,
-                    self.ebird_to_id,
-                    val_loss,
-                    stage,
-                )
+                if wandb.run:
+                    wandb.log({
+                        "train_loss": loss.item(),
+                        "lr": scheduler.get_last_lr()[0],
+                    })
 
-            if epoch % 10 == 0:
-                save_lm_checkpoint(
-                    stage_dir / f"checkpoint_epoch_{epoch}.pt",
-                    self.lm,
-                    optimizer,
-                    scheduler,
-                    epoch,
-                    global_step,
-                    self.n_species,
-                    self.ebird_to_id,
-                    val_loss,
-                    stage,
-                )
+                if global_step % EVAL_EVERY == 0:
+                    best_val_loss = self._eval_and_checkpoint(
+                        val_loader, optimizer, scheduler, stage, stage_dir,
+                        epoch, global_step, best_val_loss,
+                    )
+
+        best_val_loss = self._eval_and_checkpoint(
+            val_loader, optimizer, scheduler, stage, stage_dir,
+            sc.epochs, global_step, best_val_loss,
+        )
 
         return str(stage_dir / "best_model.pt")
 
