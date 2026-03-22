@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pathlib import Path
 from torch.utils.data import DataLoader
-from transformers import get_cosine_schedule_with_warmup
+from transformers import get_constant_schedule_with_warmup
 from tqdm import tqdm
 import wandb
 
@@ -178,10 +178,7 @@ class AudioGenPretrainer:
 
         trainable = [p for p in self.lm.parameters() if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable, lr=sc.learning_rate, weight_decay=0.01)
-        total_opt_steps = (len(train_loader) // AG_GRAD_ACCUM) * sc.epochs
-        scheduler = get_cosine_schedule_with_warmup(
-            optimizer, sc.warmup_steps, total_opt_steps
-        )
+        scheduler = get_constant_schedule_with_warmup(optimizer, sc.warmup_steps)
 
         start_epoch = 1
         best_val_loss = float("inf")
