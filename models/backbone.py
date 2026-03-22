@@ -19,6 +19,9 @@ BOS_TOKEN = SNAC_VOCAB_SIZE + 1
 EOS_TOKEN = SNAC_VOCAB_SIZE + 2
 CLASS_TOKEN_OFFSET = SNAC_VOCAB_SIZE + 3
 
+def _default_intermediate_size(n_embd):
+    raw = int(2 * (4 * n_embd) / 3)
+    return ((raw + 255) // 256) * 256
 
 def create_gpt2_model(
     vocab_size, n_positions=N_POSITIONS, n_embd=N_EMBD, n_layer=N_LAYER, n_head=N_HEAD
@@ -34,12 +37,6 @@ def create_gpt2_model(
         pad_token_id=PAD_TOKEN,
     )
     return GPT2LMHeadModel(gpt2_config)
-
-
-def _default_intermediate_size(n_embd):
-    """SwiGLU-adjusted FFN size, rounded to nearest 256."""
-    raw = int(2 * (4 * n_embd) / 3)
-    return ((raw + 255) // 256) * 256
 
 
 def create_llama_model(
@@ -76,10 +73,6 @@ _BACKBONE_CREATORS = {
 
 
 def create_model(backbone=BACKBONE, **kwargs):
-    if backbone not in _BACKBONE_CREATORS:
-        raise ValueError(
-            f"Unknown backbone '{backbone}', choose from: {list(_BACKBONE_CREATORS)}"
-        )
     return _BACKBONE_CREATORS[backbone](**kwargs)
 
 
@@ -88,7 +81,7 @@ def generate_tokens(
     model, device, class_id, max_length=MAX_SEQ_LEN, temperature=1.0, top_k=50
 ):
     model.eval()
-    n_positions = model.config.n_positions
+    n_positions = model.config.max_position_embeddings
 
     cls_token = CLASS_TOKEN_OFFSET + class_id
     input_ids = torch.tensor([[cls_token, BOS_TOKEN]], device=device)

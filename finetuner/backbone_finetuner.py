@@ -111,7 +111,8 @@ class GPT2Finetuner:
                 replace=False,
             ).tolist()
 
-    def _load_ebird_to_id(self):
+    @staticmethod
+    def _load_ebird_to_id():
         with open(SEGMENT_DIR / "ebird_to_id.json") as f:
             return json.load(f)
 

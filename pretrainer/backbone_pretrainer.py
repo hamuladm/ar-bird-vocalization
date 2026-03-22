@@ -31,12 +31,11 @@ from audio_datasets.snac_dataset import SNACTokenDataset, snac_collate_fn
 from utils.checkpoint import save_checkpoint, load_checkpoint
 
 
-class GPT2Pretrainer:
-    def __init__(
-        self, resume=None, use_wandb=False, sample_class_ids=None, num_sample_classes=3
+class BackbonePretrainer:
+    def __init__(self, resume=None, use_wandb=False, sample_class_ids=None, num_sample_classes=3,dry_run=False
     ):
         self.device = torch.device(DEVICE)
-        self.save_dir = Path(PRETRAIN_SAVE_DIR) / "gpt2"
+        self.save_dir = Path(PRETRAIN_SAVE_DIR)
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.use_wandb = use_wandb
 
@@ -222,6 +221,7 @@ class GPT2Pretrainer:
                     self.save_dir / f"checkpoint_epoch_{epoch}.pt", epoch, val_loss
                 )
 
+
         if self.use_wandb:
             wandb.finish()
 
@@ -236,7 +236,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-sample-classes", type=int, default=3)
     args = parser.parse_args()
 
-    GPT2Pretrainer(
+    BackbonePretrainer(
         resume=args.resume,
         use_wandb=args.wandb,
         sample_class_ids=args.sample_classes,
