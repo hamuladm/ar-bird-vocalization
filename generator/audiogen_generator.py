@@ -47,7 +47,7 @@ def generate_for_species(
             cfg_coef=cfg_coef,
         )
 
-    return audiogen.generate_audio(gen_tokens)
+    return audiogen.compression_model.decode(gen_tokens, None)
 
 
 @torch.no_grad()
