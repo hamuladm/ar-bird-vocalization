@@ -29,6 +29,7 @@ from models.audiogen import (
     save_lm_checkpoint,
     load_lm_checkpoint,
 )
+from models.lora import apply_lora, freeze_for_lora, lora_summary
 from audio_datasets.encodec_dataset import EnCodecTokenDataset, make_encodec_collate_fn
 
 EVAL_EVERY = 10_000
@@ -147,6 +148,20 @@ class AudioGenPretrainer:
 
         if stage == 1:
             freeze_for_stage1(self.lm)
+        elif sc.use_lora:
+            if last_checkpoint:
+                load_lm_checkpoint(last_checkpoint, self.lm, device=self.device)
+            n_replaced = apply_lora(self.lm, rank=sc.lora_rank, alpha=sc.lora_alpha)
+            freeze_for_lora(self.lm)
+            stats = lora_summary(self.lm)
+            print(
+                f"LoRA applied: {n_replaced} modules, "
+                f"rank={sc.lora_rank}, alpha={sc.lora_alpha}\n"
+                f"  Total params:     {stats['total']:,}\n"
+                f"  Trainable params: {stats['trainable']:,} "
+                f"({stats['trainable']/stats['total']*100:.2f}%)\n"
+                f"  LoRA params:      {stats['lora']:,}"
+            )
         else:
             if last_checkpoint:
                 load_lm_checkpoint(last_checkpoint, self.lm, device=self.device)
@@ -187,6 +202,8 @@ class AudioGenPretrainer:
         resume = self.resume if self.stages_to_run[0] == stage and self.resume else None
         if resume:
             ckpt = torch.load(resume, map_location=self.device, weights_only=False)
+            if sc.use_lora and "lm_state_dict" in ckpt:
+                self.lm.load_state_dict(ckpt["lm_state_dict"])
             optimizer.load_state_dict(ckpt["optimizer_state_dict"])
             scheduler.load_state_dict(ckpt["scheduler_state_dict"])
             start_epoch = ckpt["epoch"] + 1

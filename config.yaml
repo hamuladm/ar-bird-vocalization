@@ -71,14 +71,22 @@ audiogen:
   stage2:
     epochs: 50
     batch_size: 4
-    learning_rate: 1.0e-4
-    warmup_steps: 1000
+    learning_rate: 2.0e-4
+    warmup_steps: 100
+    lora:
+      enabled: true
+      rank: 16
+      alpha: 32
 
   stage3:
     epochs: 50
     batch_size: 4
     learning_rate: 5.0e-5
     warmup_steps: 500
+    lora:
+      enabled: true
+      rank: 16
+      alpha: 32
 
   generation:
     duration: 10.0

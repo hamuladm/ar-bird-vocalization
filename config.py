@@ -83,6 +83,9 @@ class StageConfig:
     batch_size: int = 4
     learning_rate: float = 1e-4
     warmup_steps: int = 1000
+    use_lora: bool = False
+    lora_rank: int = 16
+    lora_alpha: float = 32.0
 
 
 _s1 = _ag.get("stage1", {})
@@ -94,19 +97,27 @@ AG_STAGE1 = StageConfig(
 )
 
 _s2 = _ag.get("stage2", {})
+_s2_lora = _s2.get("lora", {})
 AG_STAGE2 = StageConfig(
     epochs=_s2.get("epochs", 50),
     batch_size=_s2.get("batch_size", 4),
     learning_rate=_s2.get("learning_rate", 1e-4),
     warmup_steps=_s2.get("warmup_steps", 1000),
+    use_lora=_s2_lora.get("enabled", False),
+    lora_rank=_s2_lora.get("rank", 16),
+    lora_alpha=_s2_lora.get("alpha", 32.0),
 )
 
 _s3 = _ag.get("stage3", {})
+_s3_lora = _s3.get("lora", {})
 AG_STAGE3 = StageConfig(
     epochs=_s3.get("epochs", 50),
     batch_size=_s3.get("batch_size", 4),
     learning_rate=_s3.get("learning_rate", 5e-5),
     warmup_steps=_s3.get("warmup_steps", 500),
+    use_lora=_s3_lora.get("enabled", False),
+    lora_rank=_s3_lora.get("rank", 16),
+    lora_alpha=_s3_lora.get("alpha", 32.0),
 )
 
 _ag_gen = _ag.get("generation", {})
