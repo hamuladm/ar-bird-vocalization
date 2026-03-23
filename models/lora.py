@@ -25,8 +25,10 @@ class LoRALinear(nn.Module):
         if self.bias is not None:
             self.bias.requires_grad = False
 
-        self.lora_A = nn.Parameter(torch.zeros(rank, self.in_features))
-        self.lora_B = nn.Parameter(torch.zeros(self.out_features, rank))
+        device = self.weight.device
+        dtype = self.weight.dtype
+        self.lora_A = nn.Parameter(torch.zeros(rank, self.in_features, device=device, dtype=dtype))
+        self.lora_B = nn.Parameter(torch.zeros(self.out_features, rank, device=device, dtype=dtype))
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
