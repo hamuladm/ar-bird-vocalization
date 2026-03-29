@@ -14,6 +14,8 @@ from config import (
     EVAL_N_MELS,
     EVAL_SPEC_MEAN,
     EVAL_SPEC_STD,
+    EVAL_BATCH_SIZE,
+    EVAL_SPEC_SIZE
 )
 from utils.audio import load_segment
 
@@ -21,23 +23,40 @@ AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
 
 
 class SpectrogramTransform:
-    def __init__(self, device=DEVICE):
+    def __init__(self, device: str = DEVICE):
         self.device = device
-        self.mel = torchaudio.transforms.MelSpectrogram(
-            sample_rate=EVAL_SAMPLE_RATE,
+
+        self.spectrogram = torchaudio.transforms.Spectrogram(
             n_fft=EVAL_N_FFT,
             hop_length=EVAL_HOP_LENGTH,
-            n_mels=EVAL_N_MELS,
+            power=2.0,
         ).to(device)
 
-    def __call__(self, waveform):
-        spec = self.mel(waveform.to(self.device))
-        spec = torch.log(spec.clamp(min=1e-10))
-        spec = (spec - EVAL_SPEC_MEAN) / EVAL_SPEC_STD
-        spec = spec.unsqueeze(1).expand(-1, 3, -1, -1)
-        return F.interpolate(
-            spec, size=(224, 224), mode="bilinear", align_corners=False
+        self.mel_scale = torchaudio.transforms.MelScale(
+            n_mels=EVAL_N_MELS,
+            sample_rate=EVAL_SAMPLE_RATE,
+            n_stft=EVAL_N_FFT // 2 + 1,
+        ).to(device)
+
+        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(stype="power", top_db=80).to(device)
+
+    def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
+        waveform = waveform.to(self.device)
+        spec = self.spectrogram(waveform)
+        mel_spec = self.mel_scale(spec)
+        log_mel = self.amplitude_to_db(mel_spec)
+
+        log_mel = log_mel.unsqueeze(1)
+
+        log_mel = F.interpolate(
+            log_mel,
+            size=EVAL_SPEC_SIZE,
+            mode="bilinear",
+            align_corners=False,
         )
+
+        log_mel = (log_mel - EVAL_SPEC_MEAN) / EVAL_SPEC_STD
+        return log_mel
 
 
 class EvalEmbedder:
@@ -102,15 +121,16 @@ def _extract_batched(waveform_tensors, embedder, batch_size):
     }
 
 
-def extract_embeddings_from_directory(directory, embedder, batch_size=32):
+def extract_embeddings_from_directory(directory, embedder, batch_size=EVAL_BATCH_SIZE):
     paths = _collect_audio_paths(directory)
     waveforms = [_load_and_resample(p) for p in paths]
     return _extract_batched(waveforms, embedder, batch_size)
 
 
-def extract_embeddings_from_segments(segments, embedder, batch_size=32):
+def extract_embeddings_from_segments(segments, embedder, batch_size=EVAL_BATCH_SIZE):
     waveforms = []
     for seg in segments:
+        seg["filepath"] = seg["filepath"].replace("/workspace/.hf_home/", "/home/dkham/.cache/huggingface/")
         audio_np = load_segment(
             seg["filepath"], seg["start"], seg["end"], EVAL_SAMPLE_RATE
         )
@@ -118,6 +138,6 @@ def extract_embeddings_from_segments(segments, embedder, batch_size=32):
     return _extract_batched(waveforms, embedder, batch_size)
 
 
-def extract_embeddings_from_arrays(arrays, embedder, batch_size=32):
+def extract_embeddings_from_arrays(arrays, embedder, batch_size=EVAL_BATCH_SIZE):
     waveforms = [torch.from_numpy(a).float() for a in arrays]
     return _extract_batched(waveforms, embedder, batch_size)
