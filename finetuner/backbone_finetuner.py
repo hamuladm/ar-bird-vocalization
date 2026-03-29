@@ -1,5 +1,4 @@
 import json
-import math
 import torch
 import torch.nn as nn
 import numpy as np
@@ -86,12 +85,9 @@ class GPT2Finetuner:
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=0.01
         )
-        steps_per_epoch = math.ceil(
-            len(self.train_loader) / self.grad_accum_steps
-        )
-        total_steps = steps_per_epoch * epochs
+
         self.scheduler = get_constant_schedule_with_warmup(
-            self.optimizer, warmup_steps, total_steps
+            self.optimizer, warmup_steps
         )
 
         self.start_epoch = 1
