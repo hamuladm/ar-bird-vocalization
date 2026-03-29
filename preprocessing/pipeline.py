@@ -85,7 +85,7 @@ def split_segments(segments, val_ratio, test_ratio, seed):
     }
 
 
-def save_segments(output_dir, splits):
+def save_segments(output_dir, splits, backbone_ebird_to_id_path=None):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -98,10 +98,22 @@ def save_segments(output_dir, splits):
     ebird_codes = sorted(
         {s["ebird_code"] for split_data in splits.values() for s in split_data}
     )
-    ebird_to_id = {code: i for i, code in enumerate(ebird_codes)}
+    if backbone_ebird_to_id_path is not None:
+        bp = Path(backbone_ebird_to_id_path)
+        with open(bp) as f:
+            full_map = json.load(f)
+        ebird_to_id = {}
+        for code in ebird_codes:
+            if code not in full_map:
+                raise KeyError(f"ebird_code {code!r} missing from backbone {bp}")
+            ebird_to_id[code] = full_map[code]
+        print(f"Saved ebird_to_id: {len(ebird_to_id)} classes (backbone ids from {bp})")
+    else:
+        ebird_to_id = {code: i for i, code in enumerate(ebird_codes)}
+        print(f"Saved ebird_to_id: {len(ebird_to_id)} classes")
+
     with open(output_dir / "ebird_to_id.json", "w") as f:
         json.dump(ebird_to_id, f, indent=2)
-    print(f"Saved ebird_to_id: {len(ebird_to_id)} classes")
 
 
 def preprocess_xcm(

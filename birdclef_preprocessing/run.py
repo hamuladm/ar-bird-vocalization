@@ -49,7 +49,9 @@ def main():
     )
 
     splits = split_segments(segments, args.val_ratio, args.test_ratio, args.seed)
-    save_segments(args.output_dir, splits)
+    save_segments(
+        args.output_dir, splits, backbone_ebird_to_id_path=args.ebird_to_id
+    )
 
 
 if __name__ == "__main__":
