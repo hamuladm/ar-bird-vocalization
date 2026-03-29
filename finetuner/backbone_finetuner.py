@@ -1,4 +1,5 @@
 import json
+import math
 import torch
 import torch.nn as nn
 import numpy as np
@@ -33,6 +34,7 @@ class GPT2Finetuner:
         batch_size=4,
         lr=5e-5,
         warmup_steps=500,
+        grad_accum_steps=1,
         resume=None,
         load_from=None,
         use_wandb=False,
@@ -44,6 +46,7 @@ class GPT2Finetuner:
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.use_wandb = use_wandb
         self.epochs = epochs
+        self.grad_accum_steps = max(1, int(grad_accum_steps))
 
         self.ebird_to_id = self._load_ebird_to_id()
         self.id_to_ebird = {i: c for c, i in self.ebird_to_id.items()}
@@ -83,7 +86,10 @@ class GPT2Finetuner:
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(), lr=lr, weight_decay=0.01
         )
-        total_steps = len(self.train_loader) * epochs
+        steps_per_epoch = math.ceil(
+            len(self.train_loader) / self.grad_accum_steps
+        )
+        total_steps = steps_per_epoch * epochs
         self.scheduler = get_cosine_schedule_with_warmup(
             self.optimizer, warmup_steps, total_steps
         )
@@ -118,10 +124,12 @@ class GPT2Finetuner:
 
     def train_epoch(self, epoch):
         self.model.train()
-        total_loss = 0
+        total_loss = 0.0
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch}")
+        self.optimizer.zero_grad(set_to_none=True)
+        step = -1
 
-        for batch in pbar:
+        for step, batch in enumerate(pbar):
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
 
@@ -132,14 +140,9 @@ class GPT2Finetuner:
                 input_ids=input_ids, attention_mask=attention_mask, labels=targets
             )
             loss = outputs.loss
-            loss.backward()
+            scaled = loss / self.grad_accum_steps
+            scaled.backward()
 
-            nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-            self.optimizer.step()
-            self.scheduler.step()
-            self.optimizer.zero_grad()
-
-            self.global_step += 1
             total_loss += loss.item()
             pbar.set_postfix(
                 loss=f"{loss.item():.4f}", lr=f"{self.scheduler.get_last_lr()[0]:.2e}"
@@ -150,7 +153,24 @@ class GPT2Finetuner:
                     {"train_loss": loss.item(), "lr": self.scheduler.get_last_lr()[0]}
                 )
 
-        return total_loss / len(self.train_loader)
+            if (step + 1) % self.grad_accum_steps == 0:
+                nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                self.global_step += 1
+
+        if (
+            step >= 0
+            and (step + 1) % self.grad_accum_steps != 0
+        ):
+            nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            self.optimizer.step()
+            self.scheduler.step()
+            self.optimizer.zero_grad(set_to_none=True)
+            self.global_step += 1
+
+        return total_loss / max(len(self.train_loader), 1)
 
     @torch.no_grad()
     def validate_epoch(self):
@@ -246,6 +266,12 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-steps", type=int, default=500)
+    parser.add_argument(
+        "--grad-accum",
+        type=int,
+        default=1,
+        help="Micro-batches per optimizer step (effective batch ≈ batch_size × this)",
+    )
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--sample-classes", type=int, nargs="*", default=None)
     parser.add_argument("--num-sample-classes", type=int, default=3)
@@ -256,6 +282,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
         lr=args.lr,
         warmup_steps=args.warmup_steps,
+        grad_accum_steps=args.grad_accum,
         resume=args.resume,
         load_from=args.load_from,
         use_wandb=args.wandb,
