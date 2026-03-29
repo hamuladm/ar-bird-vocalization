@@ -98,9 +98,18 @@ s3:
   bucket: "ar-bird-vocalization-dataset"
   prefix: "tokens"
 
+birdclef:
+  data_dir: "data/birdclef-2026"
+  segment_dir: "data/birdclef_segments"
+  convnext_labels: "data/convnext.json"
+  taxonomy_csv: "data/csvs/ebird_taxonomy.csv"
+  top_k: 5
+  max_entropy: 3.0
+  min_samples_per_class: 20
+
 # Reference: https://huggingface.co/DBD-research-group/ConvNeXT-Base-BirdSet-XCL
 evaluation:
-  batch_size: 32
+  batch_size: 16
   num_workers: 8
   sample_rate: 32000
   model_checkpoint: "DBD-research-group/ConvNeXT-Base-BirdSet-XCL"
@@ -109,3 +118,4 @@ evaluation:
   n_mels: 128
   spec_mean: -4.268
   spec_std: 4.569
+  spec_size: [256, 417]
