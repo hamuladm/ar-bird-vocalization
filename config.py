@@ -133,10 +133,9 @@ S3_PREFIX = _s3_cfg.get("prefix", "tokens")
 _bc = _raw.get("birdclef", {})
 BC_DATA_DIR = Path(_bc.get("data_dir", "data/birdclef-2026"))
 BC_SEGMENT_DIR = Path(_bc.get("segment_dir", "data/birdclef_segments"))
-BC_CONVNEXT_LABELS = Path(_bc.get("convnext_labels", "data/convnext.json"))
-BC_TAXONOMY_CSV = Path(_bc.get("taxonomy_csv", "data/csvs/ebird_taxonomy.csv"))
-BC_TOP_K = _bc.get("top_k", 5)
-BC_MAX_ENTROPY = _bc.get("max_entropy", 3.0)
+BC_EBIRD_TO_ID_PATH = Path(
+    _bc.get("ebird_to_id_path", str(SEGMENT_DIR / "ebird_to_id.json"))
+)
 BC_MIN_SAMPLES_PER_CLASS = _bc.get("min_samples_per_class", 20)
 
 _eval = _raw.get("evaluation", {})

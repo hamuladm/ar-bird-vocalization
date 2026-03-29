@@ -101,10 +101,7 @@ s3:
 birdclef:
   data_dir: "data/birdclef-2026"
   segment_dir: "data/birdclef_segments"
-  convnext_labels: "data/convnext.json"
-  taxonomy_csv: "data/csvs/ebird_taxonomy.csv"
-  top_k: 5
-  max_entropy: 3.0
+  ebird_to_id_path: "data/segments/ebird_to_id.json"
   min_samples_per_class: 20
 
 # Reference: https://huggingface.co/DBD-research-group/ConvNeXT-Base-BirdSet-XCL
