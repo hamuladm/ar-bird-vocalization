@@ -215,3 +215,6 @@ wandb/
 test_data/
 data_vast/
 data_relaxed/
+pretrain_data/
+pretrained_llama/
+audiogen_stage2_lora/
