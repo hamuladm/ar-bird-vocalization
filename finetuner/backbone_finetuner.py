@@ -5,7 +5,7 @@ import torch.nn as nn
 import numpy as np
 from pathlib import Path
 from torch.utils.data import DataLoader
-from transformers import get_cosine_schedule_with_warmup
+from transformers import get_constant_schedule_with_warmup
 from tqdm import tqdm
 import wandb
 
@@ -90,7 +90,7 @@ class GPT2Finetuner:
             len(self.train_loader) / self.grad_accum_steps
         )
         total_steps = steps_per_epoch * epochs
-        self.scheduler = get_cosine_schedule_with_warmup(
+        self.scheduler = get_constant_schedule_with_warmup(
             self.optimizer, warmup_steps, total_steps
         )
 
