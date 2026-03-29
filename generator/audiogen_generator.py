@@ -10,8 +10,27 @@ from config import (
     AG_GEN_TEMPERATURE,
     AG_GEN_TOP_K,
     AG_GEN_CFG_COEF,
+    AG_STAGE2,
+    AG_STAGE3,
 )
 from models.audiogen import load_audiogen, make_species_conditions
+from models.lora import apply_lora
+
+
+def _lora_rank_from_state_dict(sd):
+    for key, tensor in sd.items():
+        if key.endswith(".lora_A"):
+            return int(tensor.shape[0])
+    return None
+
+
+def _lora_alpha_for_checkpoint(ckpt):
+    if "lora_alpha" in ckpt:
+        return float(ckpt["lora_alpha"])
+    stage = ckpt.get("stage")
+    if stage == 3:
+        return float(AG_STAGE3.lora_alpha)
+    return float(AG_STAGE2.lora_alpha)
 
 
 @torch.no_grad()
@@ -71,15 +90,42 @@ def generate_audio_samples(
     return samples
 
 
-def load_finetuned_model(checkpoint_path, device="cuda"):
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+def load_finetuned_model(
+    checkpoint_path,
+    device="cuda",
+    *,
+    lora_rank=None,
+    lora_alpha=None,
+):
+    """Load full-finetune or LoRA checkpoints (LoRA is detected by ``*.lora_A`` keys)."""
+    # Always unpickle on CPU: training checkpoints include optimizer + scheduler tensors
+    # (~several × LM size). Mapping them to CUDA OOMs on 16GB before the model loads.
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    lm_sd = ckpt["lm_state_dict"]
+    ckpt.pop("optimizer_state_dict", None)
+    ckpt.pop("scheduler_state_dict", None)
 
     ebird_to_id = ckpt["ebird_to_id"]
     id_to_ebird = {i: c for c, i in ebird_to_id.items()}
     n_species = ckpt["n_species"]
 
     audiogen, _ = load_audiogen(n_species, device=device)
-    audiogen.lm.load_state_dict(ckpt["lm_state_dict"])
+    inferred_rank = _lora_rank_from_state_dict(lm_sd)
+    if inferred_rank is not None:
+        if lora_rank is not None:
+            rank = lora_rank
+        elif "lora_rank" in ckpt:
+            rank = int(ckpt["lora_rank"])
+        else:
+            rank = inferred_rank
+        alpha = (
+            float(lora_alpha)
+            if lora_alpha is not None
+            else _lora_alpha_for_checkpoint(ckpt)
+        )
+        apply_lora(audiogen.lm, rank=rank, alpha=alpha)
+    audiogen.lm.load_state_dict(lm_sd)
     audiogen.lm.eval()
 
     return {
@@ -90,6 +136,7 @@ def load_finetuned_model(checkpoint_path, device="cuda"):
         "stage": ckpt.get("stage"),
         "epoch": ckpt.get("epoch"),
         "val_loss": ckpt.get("val_loss"),
+        "used_lora": inferred_rank is not None,
     }
 
 
@@ -103,13 +150,30 @@ def main():
     parser.add_argument("--class-name", type=str, default=None)
     parser.add_argument("--num-samples", type=int, default=1)
     parser.add_argument("--list-classes", action="store_true")
+    parser.add_argument(
+        "--lora-rank",
+        type=int,
+        default=None,
+        help="Override LoRA rank when loading a LoRA checkpoint (default: infer from weights)",
+    )
+    parser.add_argument(
+        "--lora-alpha",
+        type=float,
+        default=None,
+        help="Override LoRA alpha when loading a LoRA checkpoint (default: ckpt or config by stage)",
+    )
     args = parser.parse_args()
 
     device = torch.device(DEVICE)
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    result = load_finetuned_model(args.checkpoint, device=str(device))
+    result = load_finetuned_model(
+        args.checkpoint,
+        device=str(device),
+        lora_rank=args.lora_rank,
+        lora_alpha=args.lora_alpha,
+    )
     audiogen = result["audiogen"]
     ebird_to_id = result["ebird_to_id"]
     id_to_ebird = result["id_to_ebird"]
