@@ -138,6 +138,11 @@ BC_EBIRD_TO_ID_PATH = Path(
 )
 BC_MIN_SAMPLES_PER_CLASS = _bc.get("min_samples_per_class", 20)
 
+_bc_gating = _bc.get("gating", {})
+BC_GATING_MIN_TOP1_PROB = float(_bc_gating.get("min_top1_prob", 0.5))
+BC_GATING_MAX_ENTROPY = float(_bc_gating.get("max_entropy", 2.0))
+BC_GATING_BATCH_SIZE = int(_bc_gating.get("batch_size", 16))
+
 _eval = _raw.get("evaluation", {})
 EVAL_BATCH_SIZE = _eval.get("batch_size", 32)
 EVAL_NUM_WORKERS = _eval.get("num_workers", 8)

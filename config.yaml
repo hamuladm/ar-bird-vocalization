@@ -101,8 +101,12 @@ s3:
 birdclef:
   data_dir: "data/birdclef-2026"
   segment_dir: "data/birdclef_segments"
-  ebird_to_id_path: "data/segments/ebird_to_id.json"
+  ebird_to_id_path: "pretrain_data/segments/ebird_to_id.json"
   min_samples_per_class: 20
+  gating:
+    min_top1_prob: 0.7
+    max_entropy: 4.0
+    batch_size: 64
 
 # Reference: https://huggingface.co/DBD-research-group/ConvNeXT-Base-BirdSet-XCL
 evaluation:
@@ -115,4 +119,4 @@ evaluation:
   n_mels: 128
   spec_mean: -4.268
   spec_std: 4.569
-  spec_size: [256, 417]
+  spec_size: [128, 334]
