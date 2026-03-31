@@ -107,6 +107,15 @@ birdclef:
     min_top1_prob: 0.7
     max_entropy: 4.0
     batch_size: 64
+  xcm_enrich:
+    enabled: false
+    hf_path: "DBD-research-group/BirdSet"
+    hf_name: "XCM"
+    audio_root: null
+    # Streaming metadata only (no ~90GB audio column). Requires audio_root for file paths.
+    metadata_only: true
+    shuffle_buffer_size: 50000
+    max_stream_passes: 5
 
 # Reference: https://huggingface.co/DBD-research-group/ConvNeXT-Base-BirdSet-XCL
 evaluation:
