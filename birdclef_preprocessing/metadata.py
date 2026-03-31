@@ -23,7 +23,6 @@ def load_aves_labels(taxonomy_path):
 
 
 def load_backbone_species(ebird_to_id_path):
-    """eBird codes the backbone was trained on (keys of ebird_to_id.json)."""
     with open(ebird_to_id_path) as f:
         data = json.load(f)
     return set(data.keys())
@@ -60,7 +59,7 @@ def build_candidate_segments(
     )
 
     recordings = load_train_csv(train_csv_path, valid_species)
-    print(f"Recordings after species filter: {len(recordings)}")
+    logger.info("Recordings after species filter: %d", {len(recordings)})
     logger.info(
         "Chunking recordings: chunk_sec=%s min_chunk_sec=%s audio_dir=%s",
         chunk_sec,
