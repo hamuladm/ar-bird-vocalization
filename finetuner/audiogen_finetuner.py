@@ -1,4 +1,5 @@
 import json
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,14 +34,33 @@ from audio_datasets.encodec_dataset import EnCodecTokenDataset, make_encodec_col
 
 
 class AudioGenFinetuner:
-    def __init__(self, stage=None, resume=None, load_from=None, use_wandb=False):
+    def __init__(
+        self,
+        stage=None,
+        resume=None,
+        load_from=None,
+        use_wandb=False,
+        sample_class_ids=None,
+        num_sample_classes=3,
+    ):
         self.device = torch.device(DEVICE)
         self.save_dir = Path(AG_SAVE_DIR) / "finetune"
         self.save_dir.mkdir(parents=True, exist_ok=True)
         self.use_wandb = use_wandb
 
         self.ebird_to_id = self._load_ebird_to_id()
+        self.id_to_ebird = {i: c for c, i in self.ebird_to_id.items()}
         self.n_species = len(self.ebird_to_id)
+
+        if sample_class_ids is not None:
+            self.sample_class_ids = sample_class_ids
+        else:
+            rng = np.random.default_rng(42)
+            self.sample_class_ids = rng.choice(
+                self.n_species,
+                size=min(num_sample_classes, self.n_species),
+                replace=False,
+            ).tolist()
 
         self.audiogen, self.species_cond = load_audiogen(
             self.n_species, device=str(self.device)
@@ -202,13 +222,23 @@ class AudioGenFinetuner:
             )
 
             if wandb.run:
-                wandb.log(
-                    {
-                        f"stage{stage}/train_loss_epoch": train_loss,
-                        f"stage{stage}/val_loss": val_loss,
-                        f"stage{stage}/epoch": epoch,
-                    }
+                from generator.audiogen_generator import generate_audio_samples
+
+                log_dict = {
+                    f"stage{stage}/train_loss_epoch": train_loss,
+                    f"stage{stage}/val_loss": val_loss,
+                    f"stage{stage}/epoch": epoch,
+                }
+                samples = generate_audio_samples(
+                    self.audiogen,
+                    self.id_to_ebird,
+                    class_ids=self.sample_class_ids,
                 )
+                for name, audio_np, sr in samples:
+                    log_dict[f"audio/{name}"] = wandb.Audio(
+                        audio_np, sample_rate=sr, caption=f"{name}_s{stage}_e{epoch}"
+                    )
+                wandb.log(log_dict)
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -267,6 +297,8 @@ if __name__ == "__main__":
     parser.add_argument("--resume", type=str, default=None)
     parser.add_argument("--load-from", type=str, default=None)
     parser.add_argument("--wandb", action="store_true")
+    parser.add_argument("--sample-classes", type=int, nargs="*", default=None)
+    parser.add_argument("--num-sample-classes", type=int, default=3)
     args = parser.parse_args()
 
     AudioGenFinetuner(
@@ -274,4 +306,6 @@ if __name__ == "__main__":
         resume=args.resume,
         load_from=args.load_from,
         use_wandb=args.wandb,
+        sample_class_ids=args.sample_classes,
+        num_sample_classes=args.num_sample_classes,
     ).run()
