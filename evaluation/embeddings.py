@@ -141,3 +141,19 @@ def extract_embeddings_from_segments(segments, embedder, batch_size=EVAL_BATCH_S
 def extract_embeddings_from_arrays(arrays, embedder, batch_size=EVAL_BATCH_SIZE):
     waveforms = [torch.from_numpy(a).float() for a in arrays]
     return _extract_batched(waveforms, embedder, batch_size)
+
+
+def extract_embeddings_from_shards(directory, embedder, batch_size=EVAL_BATCH_SIZE):
+    shard_paths = sorted(Path(directory).glob("*.npz"))
+    waveforms = []
+    for path in shard_paths:
+        data = np.load(path)
+        samples = data["samples"]
+        lengths = data["lengths"]
+        sr = int(data["sample_rate"])
+        for i in range(len(lengths)):
+            w = torch.from_numpy(samples[i, : lengths[i]]).float()
+            if sr != EVAL_SAMPLE_RATE:
+                w = torchaudio.functional.resample(w.unsqueeze(0), sr, EVAL_SAMPLE_RATE).squeeze(0)
+            waveforms.append(w)
+    return _extract_batched(waveforms, embedder, batch_size)

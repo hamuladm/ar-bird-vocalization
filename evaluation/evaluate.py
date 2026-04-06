@@ -13,6 +13,7 @@ from evaluation.embeddings import (
     extract_embeddings_from_directory,
     extract_embeddings_from_segments,
     extract_embeddings_from_arrays,
+    extract_embeddings_from_shards,
 )
 from evaluation.metrics import inception_score, compute_fad
 
@@ -22,7 +23,6 @@ def parse_args():
 
     seg_group = parser.add_argument_group("Segment + generation mode")
     seg_group.add_argument("--checkpoint", type=str, default=None)
-    seg_group.add_argument("--test-segments", type=str, default=None)
     seg_group.add_argument("--num-samples-per-class", type=int, default=10)
     seg_group.add_argument("--max-classes", type=int, default=1)
     seg_group.add_argument("--temperature", type=float, default=SNAC_GEN_TEMPERATURE)
@@ -32,6 +32,7 @@ def parse_args():
     dir_group.add_argument("--generated-dir", type=str, default=None)
     dir_group.add_argument("--reference-dir", type=str, default=None)
 
+    parser.add_argument("--test-segments", type=str, default=None)
     parser.add_argument("--metrics", type=str, default="is,fad")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--device", type=str, default=DEVICE)
@@ -96,19 +97,49 @@ def _run_segment_mode(args, metrics_to_compute):
     return results
 
 
+def _has_shards(directory):
+    return any(Path(directory).glob("*.npz"))
+
+
 def _run_directory_mode(args, metrics_to_compute):
     gen_dir = Path(args.generated_dir)
     embedder = EvalEmbedder(device=args.device)
-    gen_data = extract_embeddings_from_directory(
-        gen_dir, embedder, batch_size=args.batch_size
-    )
+
+    if _has_shards(gen_dir):
+        gen_data = extract_embeddings_from_shards(
+            gen_dir, embedder, batch_size=args.batch_size
+        )
+    else:
+        gen_data = extract_embeddings_from_directory(
+            gen_dir, embedder, batch_size=args.batch_size
+        )
 
     results = {}
 
     if "is" in metrics_to_compute:
         results["inception_score"] = inception_score(gen_data["probs"])
 
-    if "fad" in metrics_to_compute:
+    has_ref_segments = args.test_segments is not None
+    has_ref_dir = args.reference_dir is not None
+
+    if has_ref_segments:
+        with open(args.test_segments) as f:
+            segments = json.load(f)
+        if _has_shards(gen_dir):
+            shard_classes = {p.stem for p in gen_dir.glob("*.npz")}
+            segments = [s for s in segments if s["ebird_code"] in shard_classes]
+        ref_data = extract_embeddings_from_segments(
+            segments, embedder, batch_size=args.batch_size
+        )
+        if "is" in metrics_to_compute:
+            gt_is = inception_score(ref_data["probs"])
+            results["gt_inception_score"] = gt_is
+            results["is_ratio"] = (
+                results["inception_score"] / gt_is if gt_is > 0 else float("nan")
+            )
+        if "fad" in metrics_to_compute:
+            results["fad"] = compute_fad(gen_data["features"], ref_data["features"])
+    elif has_ref_dir and "fad" in metrics_to_compute:
         ref_data = extract_embeddings_from_directory(
             args.reference_dir, embedder, batch_size=args.batch_size
         )
@@ -118,6 +149,9 @@ def _run_directory_mode(args, metrics_to_compute):
         "mode": "directory",
         "generated_dir": str(gen_dir.resolve()),
     }
+    if has_ref_segments:
+        results["metadata"]["test_segments"] = args.test_segments
+        results["metadata"]["num_reference"] = len(segments)
     return results
 
 
