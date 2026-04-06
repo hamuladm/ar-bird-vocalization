@@ -4,7 +4,7 @@ audio:
   sample_rate: 32000
   chunk_length: 10
   fade_sec: 1.0
-  min_chunk_sec: 5.0
+  min_chunk_sec: 0.1
 
 snac:
   model: "hubertsiuzdak/snac_32khz"
@@ -106,16 +106,20 @@ birdclef:
   gating:
     min_top1_prob: 0.7
     max_entropy: 4.0
-    batch_size: 64
+    batch_size: 32
   xcm_enrich:
-    enabled: false
-    hf_path: "DBD-research-group/BirdSet"
-    hf_name: "XCM"
-    audio_root: null
-    # Streaming metadata only (no ~90GB audio column). Requires audio_root for file paths.
-    metadata_only: true
-    shuffle_buffer_size: 50000
-    max_stream_passes: 5
+    enabled: true
+    # birdclef_train: quota = (BirdCLEF train segment count per class) × chunk_length
+    # fixed_per_class: quota = xcm_extra_segments_per_class × chunk_length per finetune class
+    quota_mode: "fixed_per_class"
+    xcm_extra_segments_per_class: 1000
+    # Class vocabulary for finetuning + XCM quota allowlist (default: birdclef.segment_dir/ebird_to_id.json)
+    finetune_ebird_to_id_json: null
+    passed_segments_json: "data_relaxed/relaxed_filtered/passed_segments.json"
+    min_top1_prob: null
+    # Pretrain segment dir with val_segments.json / test_segments.json.
+    # Recordings in those holdout sets are excluded from enrichment to prevent data leakage.
+    pretrain_segment_dir: "pretrain_data/segments"
 
 # Reference: https://huggingface.co/DBD-research-group/ConvNeXT-Base-BirdSet-XCL
 evaluation:

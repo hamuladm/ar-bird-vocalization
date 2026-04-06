@@ -21,14 +21,13 @@ from config import (
     BC_GATING_MAX_ENTROPY,
     BC_GATING_BATCH_SIZE,
     BC_XCM_ENRICH_ENABLED,
-    BC_XCM_HF_PATH,
-    BC_XCM_HF_NAME,
-    BC_XCM_AUDIO_ROOT,
-    BC_XCM_METADATA_ONLY,
-    BC_XCM_SHUFFLE_BUFFER_SIZE,
-    BC_XCM_MAX_STREAM_PASSES,
+    BC_XCM_PASSED_SEGMENTS_JSON,
+    BC_XCM_FINETUNE_EBIRD_TO_ID_JSON,
+    BC_XCM_MIN_TOP1_PROB,
+    BC_XCM_PRETRAIN_SEGMENT_DIR,
+    BC_XCM_QUOTA_MODE,
+    BC_XCM_EXTRA_SEGMENTS_PER_CLASS,
     EVAL_MODEL_CHECKPOINT,
-    EVAL_SAMPLE_RATE,
 )
 from preprocessing.pipeline import split_segments, save_segments
 from birdclef_preprocessing.metadata import (
@@ -37,11 +36,7 @@ from birdclef_preprocessing.metadata import (
     filter_min_samples_per_class,
 )
 from birdclef_preprocessing.gating import gate_segments
-from birdclef_preprocessing.xcm_enrich import (
-    enrich_segments_with_xcm,
-    subset_ebird_to_id_for_classes,
-    train_quota_seconds_per_class,
-)
+from birdclef_preprocessing.xcm_enrich import enrich_with_xcm_from_jsons
 from judge import BirdClassifier
 
 logger = logging.getLogger(__name__)
@@ -51,7 +46,7 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "BirdCLEF segments: Aves ∩ backbone, optional ConvNeXT 3-stage gating, "
-            "min_samples per class, optional BirdSet XCM enrichment (event windows), "
+            "min_samples per class, optional enrichment from relaxed passed_segments.json, "
             "then train/val/test split."
         )
     )
@@ -117,47 +112,53 @@ def main():
     parser.add_argument(
         "--xcm-enrich",
         action="store_true",
-        help="After BirdCLEF steps, add XCM segments (see birdclef.xcm_enrich in config)",
+        help="After BirdCLEF steps, add segments from passed_segments.json (birdclef.xcm_enrich)",
     )
     parser.add_argument(
-        "--xcm-audio-root",
+        "--xcm-finetune-ebird-json",
         type=str,
         default=None,
-        help="Directory to join with XCM filepath when HF audio path is missing",
+        help="Finetune ebird_to_id.json (quota allowlist; default: birdclef.xcm_enrich / segment_dir)",
     )
     parser.add_argument(
-        "--xcm-hf-path",
+        "--xcm-passed-json",
         type=str,
         default=None,
-        help="Override Hugging Face dataset path for XCM",
+        help="JSON list of {filepath, start, end, ebird_code, top1_prob, …} (default: config)",
     )
     parser.add_argument(
-        "--xcm-hf-name",
-        type=str,
+        "--xcm-min-top1-prob",
+        type=float,
         default=None,
-        help="Override Hugging Face config / subset name (default: XCM)",
+        help="Skip rows with top1_prob <= this (default: birdclef.xcm_enrich.min_top1_prob or off)",
+    )
+    parser.add_argument(
+        "--xcm-quota-mode",
+        type=str,
+        choices=("birdclef_train", "fixed_per_class"),
+        default=None,
+        help="XCM quota: birdclef_train vs fixed_per_class (default: config)",
+    )
+    parser.add_argument(
+        "--xcm-extra-segments-per-class",
+        type=int,
+        default=None,
+        help="With fixed_per_class: XCM segments per finetune class (default: config)",
     )
     parser.add_argument(
         "--xcm-gate",
         action="store_true",
-        help="Run ConvNeXT gating on XCM segments only before merging",
+        help="Run ConvNeXT gating on enriched segments only before merging",
     )
     parser.add_argument(
-        "--xcm-decode-audio",
-        action="store_true",
-        help="Load full XCM split with audio (huge download). Default is metadata-only streaming.",
-    )
-    parser.add_argument(
-        "--xcm-shuffle-buffer",
-        type=int,
-        default=None,
-        help="Iterable shuffle buffer for metadata-only mode (default: config)",
-    )
-    parser.add_argument(
-        "--xcm-max-passes",
-        type=int,
-        default=None,
-        help="Max streaming passes over XCM if caps not met (default: config)",
+        "--pretrain-segment-dir",
+        type=str,
+        default=str(BC_XCM_PRETRAIN_SEGMENT_DIR) if BC_XCM_PRETRAIN_SEGMENT_DIR else None,
+        help=(
+            "Pretrain segment dir with val_segments.json / test_segments.json. "
+            "Recordings in those holdout sets are excluded from XCM enrichment to "
+            "prevent data leakage (default: config birdclef.xcm_enrich.pretrain_segment_dir)"
+        ),
     )
     args = parser.parse_args()
 
@@ -217,52 +218,48 @@ def main():
 
     use_xcm = args.xcm_enrich or BC_XCM_ENRICH_ENABLED
     if use_xcm:
-        hf_path = args.xcm_hf_path or BC_XCM_HF_PATH
-        hf_name = args.xcm_hf_name or BC_XCM_HF_NAME
-        audio_root = args.xcm_audio_root or BC_XCM_AUDIO_ROOT
-        class_codes = {s["ebird_code"] for s in segments}
-        ebird_subset = subset_ebird_to_id_for_classes(args.ebird_to_id, class_codes)
-        quota_sec = train_quota_seconds_per_class(
+        finetune_json = Path(
+            args.xcm_finetune_ebird_json or BC_XCM_FINETUNE_EBIRD_TO_ID_JSON
+        )
+        passed_json = Path(args.xcm_passed_json or BC_XCM_PASSED_SEGMENTS_JSON)
+        min_tp = (
+            args.xcm_min_top1_prob
+            if args.xcm_min_top1_prob is not None
+            else BC_XCM_MIN_TOP1_PROB
+        )
+        q_mode = args.xcm_quota_mode or BC_XCM_QUOTA_MODE
+        x_extra = (
+            args.xcm_extra_segments_per_class
+            if args.xcm_extra_segments_per_class is not None
+            else BC_XCM_EXTRA_SEGMENTS_PER_CLASS
+        )
+        xcm_segs, _finetune_map, enrich_stats = enrich_with_xcm_from_jsons(
             segments,
+            finetune_ebird_to_id_json=finetune_json,
+            passed_segments_json=passed_json,
             val_ratio=args.val_ratio,
             test_ratio=args.test_ratio,
             seed=args.seed,
             chunk_sec=args.chunk_sec,
-            ebird_to_id=ebird_subset,
-        )
-        logger.info(
-            "XCM enrichment: quota = n_train×chunk (%.1fs); total target %.0fs; "
-            "classes=%d; hf=%s/%s; audio_root=%s",
-            args.chunk_sec,
-            sum(quota_sec.values()),
-            len(quota_sec),
-            hf_path,
-            hf_name,
-            audio_root,
-        )
-        metadata_only = BC_XCM_METADATA_ONLY and not args.xcm_decode_audio
-        shuffle_buf = (
-            args.xcm_shuffle_buffer
-            if args.xcm_shuffle_buffer is not None
-            else BC_XCM_SHUFFLE_BUFFER_SIZE
-        )
-        max_passes = (
-            args.xcm_max_passes
-            if args.xcm_max_passes is not None
-            else BC_XCM_MAX_STREAM_PASSES
-        )
-        xcm_segs, _ = enrich_segments_with_xcm(
-            quota_seconds=quota_sec,
-            hf_path=hf_path,
-            hf_name=hf_name,
-            seed=args.seed,
-            chunk_sec=args.chunk_sec,
             min_chunk_sec=args.min_chunk_sec,
-            audio_root=audio_root,
-            sample_rate=EVAL_SAMPLE_RATE,
-            metadata_only=metadata_only,
-            shuffle_buffer_size=max(2, shuffle_buf),
-            max_stream_passes=max(1, max_passes),
+            rewrite_hf_paths=args.rewrite_hf_paths,
+            min_top1_prob=min_tp,
+            quota_mode=q_mode,
+            xcm_extra_segments_per_class=x_extra,
+            pretrain_segment_dir=args.pretrain_segment_dir,
+        )
+        quota_sec = enrich_stats.get("initial_quota_sec", {})
+        logger.info(
+            "Enrichment from passed_segments: quota_mode=%s; total quota target %.0fs; "
+            "finetune_classes=%d (from %s); passed_json=%s; min_top1_prob=%s; "
+            "xcm_extra_segments_per_class=%s",
+            q_mode,
+            sum(quota_sec.values()),
+            enrich_stats.get("finetune_n_classes", 0),
+            finetune_json,
+            passed_json,
+            min_tp,
+            enrich_stats.get("xcm_extra_segments_per_class"),
         )
         if args.xcm_gate and xcm_segs:
             dev = args.device or DEVICE

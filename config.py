@@ -145,13 +145,24 @@ BC_GATING_BATCH_SIZE = int(_bc_gating.get("batch_size", 16))
 
 _bc_xcm = _bc.get("xcm_enrich", {})
 BC_XCM_ENRICH_ENABLED = bool(_bc_xcm.get("enabled", False))
-BC_XCM_HF_PATH = str(_bc_xcm.get("hf_path", "DBD-research-group/BirdSet"))
-BC_XCM_HF_NAME = str(_bc_xcm.get("hf_name", "XCM"))
-_xcm_root = _bc_xcm.get("audio_root")
-BC_XCM_AUDIO_ROOT = None if _xcm_root in (None, "", "null") else str(_xcm_root)
-BC_XCM_METADATA_ONLY = bool(_bc_xcm.get("metadata_only", True))
-BC_XCM_SHUFFLE_BUFFER_SIZE = int(_bc_xcm.get("shuffle_buffer_size", 50_000))
-BC_XCM_MAX_STREAM_PASSES = int(_bc_xcm.get("max_stream_passes", 5))
+_psj = _bc_xcm.get("passed_segments_json")
+BC_XCM_PASSED_SEGMENTS_JSON = (
+    Path(_psj) if _psj else Path("data_relaxed/relaxed_filtered/passed_segments.json")
+)
+_feid = _bc_xcm.get("finetune_ebird_to_id_json")
+BC_XCM_FINETUNE_EBIRD_TO_ID_JSON = (
+    Path(_feid) if _feid else BC_SEGMENT_DIR / "ebird_to_id.json"
+)
+_mtp = _bc_xcm.get("min_top1_prob")
+BC_XCM_MIN_TOP1_PROB = None if _mtp in (None, "", "null") else float(_mtp)
+BC_XCM_QUOTA_MODE = str(_bc_xcm.get("quota_mode", "birdclef_train"))
+if BC_XCM_QUOTA_MODE not in ("birdclef_train", "fixed_per_class"):
+    raise ValueError(
+        f"birdclef.xcm_enrich.quota_mode must be 'birdclef_train' or 'fixed_per_class', got {BC_XCM_QUOTA_MODE!r}"
+    )
+BC_XCM_EXTRA_SEGMENTS_PER_CLASS = int(_bc_xcm.get("xcm_extra_segments_per_class", 50))
+_psd = _bc_xcm.get("pretrain_segment_dir")
+BC_XCM_PRETRAIN_SEGMENT_DIR: Path | None = Path(_psd) if _psd else None
 
 _eval = _raw.get("evaluation", {})
 EVAL_BATCH_SIZE = _eval.get("batch_size", 32)

@@ -84,19 +84,33 @@ def generate_tokens(
     n_positions = model.config.max_position_embeddings
 
     cls_token = CLASS_TOKEN_OFFSET + class_id
-    input_ids = torch.tensor([[cls_token, BOS_TOKEN]], device=device)
+    input_ids = torch.tensor([[cls_token, BOS_TOKEN]], device=device, dtype=torch.long)
+
+    past_key_values = None
 
     for _ in range(max_length - 2):
-        context = (
-            input_ids
-            if input_ids.shape[1] <= n_positions
-            else input_ids[:, -n_positions:]
-        )
-        outputs = model(context)
+        if past_key_values is None:
+            context = (
+                input_ids
+                if input_ids.shape[1] <= n_positions
+                else input_ids[:, -n_positions:]
+            )
+            outputs = model(context, use_cache=True)
+            past_key_values = outputs.past_key_values
+        else:
+            token_in = input_ids[:, -1:]
+            outputs = model(
+                token_in,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+            past_key_values = outputs.past_key_values
+
         logits = outputs.logits[:, -1, :] / temperature
 
         if top_k > 0:
             topk_vals = torch.topk(logits, top_k).values
+            logits = logits.clone()
             logits[logits < topk_vals[:, -1:]] = float("-inf")
 
         probs = torch.softmax(logits, dim=-1)
@@ -106,6 +120,9 @@ def generate_tokens(
             break
 
         input_ids = torch.cat([input_ids, next_token], dim=1)
+
+        if input_ids.shape[1] > n_positions:
+            past_key_values = None
 
     return input_ids[0].cpu().numpy()
 

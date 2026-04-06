@@ -1,26 +1,168 @@
-
 import json
 import logging
-import os
+import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
-from datasets import Audio, load_dataset
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+import soundfile as sf
 from tqdm.auto import tqdm
 
-from preprocessing.pipeline import split_segments
+from preprocessing.pipeline import save_segments, split_segments
+
+
+def _normalize_filepath(filepath: str, rewrite_hf_paths: bool) -> str:
+    if rewrite_hf_paths:
+        return filepath.replace(
+            "/workspace/.hf_home/", "/home/dkham/.cache/huggingface/"
+        )
+    return filepath
 
 logger = logging.getLogger(__name__)
 
-XCM_METADATA_COLUMNS = (
-    "ebird_code",
-    "filepath",
-    "length",
-    "detected_events",
-    "event_cluster",
-)
+XcmQuotaMode = Literal["birdclef_train", "fixed_per_class"]
+
+
+def load_pretrain_holdout_filepaths(
+    pretrain_segment_dir: str | Path,
+    rewrite_hf_paths: bool = False,
+) -> frozenset[str]:
+    """Collect all filepaths from pretrain val + test segment JSONs.
+
+    Any recording that appears in the pretrain holdout sets must be excluded
+    from finetuning enrichment to prevent data leakage.
+    """
+    seg_dir = Path(pretrain_segment_dir)
+    fps: set[str] = set()
+    for name in ("val_segments.json", "test_segments.json"):
+        p = seg_dir / name
+        if not p.is_file():
+            raise FileNotFoundError(
+                f"Pretrain holdout file not found: {p}. "
+                "Cannot guarantee no data leakage without it."
+            )
+        with open(p) as f:
+            segments: list[dict] = json.load(f)
+        for seg in segments:
+            raw_fp = seg.get("filepath", "")
+            if raw_fp:
+                fps.add(_normalize_filepath(str(raw_fp), rewrite_hf_paths))
+    logger.info(
+        "Loaded %d unique pretrain holdout filepaths from %s",
+        len(fps),
+        seg_dir,
+    )
+    return frozenset(fps)
+
+
+def load_finetune_ebird_to_id(path: str | Path) -> dict[str, int]:
+    """Load ebird_code -> class id for finetuning (e.g. data/birdclef_segments/ebird_to_id.json)."""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"finetune ebird_to_id JSON not found: {p}")
+    with open(p) as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"expected non-empty JSON object in {p}")
+    out: dict[str, int] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str):
+            raise TypeError(f"ebird codes must be str, got {type(k)!r} in {p}")
+        out[k] = int(v)
+    return out
+
+
+def fixed_quota_seconds_per_class(
+    finetune_map: dict[str, int],
+    *,
+    extra_segments_per_class: int,
+    chunk_sec: float,
+) -> dict[str, float]:
+    """Quota in seconds: each finetune class gets `extra_segments_per_class` chunks of length `chunk_sec`."""
+    if extra_segments_per_class < 0:
+        raise ValueError("extra_segments_per_class must be >= 0")
+    sec = float(extra_segments_per_class) * float(chunk_sec)
+    return {c: sec for c in finetune_map}
+
+
+def enrich_with_xcm_from_jsons(
+    birdclef_segments: list[dict],
+    *,
+    finetune_ebird_to_id_json: str | Path,
+    passed_segments_json: str | Path,
+    val_ratio: float,
+    test_ratio: float,
+    seed: int,
+    chunk_sec: float,
+    min_chunk_sec: float,
+    rewrite_hf_paths: bool = False,
+    min_top1_prob: float | None = None,
+    quota_mode: XcmQuotaMode = "birdclef_train",
+    xcm_extra_segments_per_class: int = 50,
+    pretrain_segment_dir: str | Path | None = None,
+) -> tuple[list[dict], dict[str, int], dict[str, Any]]:
+    """
+    Load finetune class vocabulary and XCM passed segments; set per-class audio quota,
+    then add relaxed segments until quotas are met.
+
+    quota_mode:
+      - birdclef_train: quota = (train split segment count per class) × chunk_sec,
+        intersected with finetune ebird_to_id keys (legacy behavior).
+      - fixed_per_class: quota = xcm_extra_segments_per_class × chunk_sec for every
+        finetune class (independent of BirdCLEF counts).
+
+    pretrain_segment_dir: path to pretrain segments directory containing
+      val_segments.json and test_segments.json.  When provided, recordings
+      that appear in those holdout splits are excluded from enrichment to
+      prevent data leakage between pretraining evaluation and finetuning.
+    """
+    exclude_fps: frozenset[str] | None = None
+    if pretrain_segment_dir is not None:
+        exclude_fps = load_pretrain_holdout_filepaths(
+            pretrain_segment_dir, rewrite_hf_paths=rewrite_hf_paths
+        )
+
+    finetune_map = load_finetune_ebird_to_id(finetune_ebird_to_id_json)
+    if quota_mode == "birdclef_train":
+        quota_sec = train_quota_seconds_per_class(
+            birdclef_segments,
+            val_ratio=val_ratio,
+            test_ratio=test_ratio,
+            seed=seed,
+            chunk_sec=chunk_sec,
+            ebird_to_id=finetune_map,
+        )
+    elif quota_mode == "fixed_per_class":
+        quota_sec = fixed_quota_seconds_per_class(
+            finetune_map,
+            extra_segments_per_class=xcm_extra_segments_per_class,
+            chunk_sec=chunk_sec,
+        )
+    else:
+        raise ValueError(f"unknown quota_mode: {quota_mode!r}")
+
+    xcm_segs, stats = enrich_segments_with_xcm(
+        quota_seconds=quota_sec,
+        passed_segments_json=passed_segments_json,
+        seed=seed,
+        chunk_sec=chunk_sec,
+        min_chunk_sec=min_chunk_sec,
+        rewrite_hf_paths=rewrite_hf_paths,
+        min_top1_prob=min_top1_prob,
+        exclude_filepaths=exclude_fps,
+    )
+    stats["finetune_ebird_to_id_path"] = str(Path(finetune_ebird_to_id_json).resolve())
+    stats["finetune_n_classes"] = len(finetune_map)
+    stats["quota_mode"] = quota_mode
+    stats["xcm_extra_segments_per_class"] = (
+        xcm_extra_segments_per_class if quota_mode == "fixed_per_class" else None
+    )
+    return xcm_segs, finetune_map, stats
 
 
 def train_quota_seconds_per_class(
@@ -39,32 +181,6 @@ def train_quota_seconds_per_class(
         allowed = frozenset(ebird_to_id.keys())
         quota = {c: v for c, v in quota.items() if c in allowed}
     return quota
-
-
-def filter_bird_events(
-    detected_events: list,
-    event_cluster: list | None,
-) -> list[tuple[float, float]]:
-    if not detected_events:
-        return []
-    de = np.asarray(detected_events, dtype=np.float64)
-    if de.ndim != 2 or de.shape[1] != 2:
-        return []
-
-    if event_cluster is None or len(event_cluster) != len(detected_events):
-        return [(float(de[i, 0]), float(de[i, 1])) for i in range(len(de))]
-
-    ec = np.asarray(event_cluster)
-    if len(ec) == 1 and ec[0] == -1:
-        return []
-
-    if (not (len(ec) == 1 and ec[0] == -1)) or len(ec) > 1:
-        mask = ec != -1
-        de = de[mask]
-    if len(de) < 1:
-        return []
-
-    return [(float(de[i, 0]), float(de[i, 1])) for i in range(len(de))]
 
 
 def event_to_segment_window(
@@ -124,302 +240,141 @@ def event_to_segment_window(
     return (float(t0), float(t1))
 
 
-def _resolve_audio_path(
-    row: dict[str, Any],
-    audio_root: str | None,
-    *,
-    verify_exists: bool = True,
-) -> str | None:
-    fp = row.get("filepath")
-    if audio_root and fp:
-        candidate = Path(audio_root) / fp
-        if not verify_exists or candidate.is_file():
-            return str(candidate)
-    audio = row.get("audio")
-    if isinstance(audio, dict):
-        p = audio.get("path")
-        if p and (not verify_exists or Path(p).is_file()):
-            return str(p)
-    return None
-
-
-def _pack_segments_from_row(
-    row: dict[str, Any],
-    ebird_code: str,
-    remaining_sec: dict[str, float],
-    chunk_sec: float,
-    min_chunk_sec: float,
-    rng: np.random.Generator,
-    audio_root: str | None,
-) -> list[dict[str, Any]]:
-    """Extract one or more training windows from bird events in one XCM row."""
-    if remaining_sec.get(ebird_code, 0.0) <= 0:
-        return []
-
-    length = row.get("length")
-    if length is None:
-        return []
-    file_len = float(length)
-
-    events = filter_bird_events(
-        row.get("detected_events") or [],
-        row.get("event_cluster"),
-    )
-    if not events:
-        return []
-
-    path = _resolve_audio_path(row, audio_root)
-    if not path:
-        return []
-
-    order = rng.permutation(len(events))
-    out: list[dict[str, Any]] = []
-    for j in order:
-        if remaining_sec[ebird_code] <= 0:
-            break
-        ev_start, ev_end = events[int(j)]
-        window = event_to_segment_window(
-            ev_start, ev_end, file_len, chunk_sec, min_chunk_sec, rng
-        )
-        if window is None:
-            continue
-        t0, t1 = window
-        dur = t1 - t0
-        if dur <= 0:
-            continue
-        out.append(
-            {
-                "filepath": path,
-                "start": t0,
-                "end": t1,
-                "ebird_code": ebird_code,
-                "source": "xcm",
-            }
-        )
-        remaining_sec[ebird_code] = max(0.0, remaining_sec[ebird_code] - dur)
-
-    return out
-
-
-def get_xcm_ebird_names(hf_path: str, hf_name: str) -> list[str]:
-    tiny = load_dataset(
-        hf_path,
-        hf_name,
-        split="train[:1]",
-        trust_remote_code=True,
-    )
-    names = tiny.features["ebird_code"].names
-    if names is None:
-        raise ValueError("XCM dataset has no ebird_code.names")
-    return list(names)
-
-
-def load_xcm_train_full_audio(
-    hf_path: str,
-    hf_name: str,
-    sample_rate: int = 32000,
-):
-    ds = load_dataset(hf_path, hf_name, split="train", trust_remote_code=True)
-    ds = ds.cast_column(
-        "audio",
-        Audio(sampling_rate=sample_rate, decode=True),
-    )
-    logger.warning(
-        "XCM: full dataset with audio decode — large download. Prefer metadata_only + audio_root."
-    )
-    return ds
-
-
-def _xcm_metadata_stream(
-    hf_path: str,
-    hf_name: str,
-    *,
-    ebird_names: list[str],
-    allowed_species: frozenset[str],
-    shuffle_seed: int,
-    shuffle_buffer_size: int,
-):
-    ds = load_dataset(
-        hf_path,
-        hf_name,
-        split="train",
-        streaming=True,
-        trust_remote_code=True,
-    )
-    ds = ds.select_columns(list(XCM_METADATA_COLUMNS))
-
-    def _species_ok(ex: dict) -> bool:
-        return ebird_names[int(ex["ebird_code"])] in allowed_species
-
-    ds = ds.filter(_species_ok)
-    ds = ds.shuffle(seed=shuffle_seed, buffer_size=shuffle_buffer_size)
-    return ds
+def _duration_seconds(path: str, cache: dict[str, float]) -> float | None:
+    if path in cache:
+        return cache[path]
+    try:
+        info = sf.info(path)
+    except OSError:
+        return None
+    cache[path] = float(info.duration)
+    return cache[path]
 
 
 def enrich_segments_with_xcm(
     *,
     quota_seconds: dict[str, float],
-    hf_path: str,
-    hf_name: str,
+    passed_segments_json: str | Path,
     seed: int,
     chunk_sec: float,
     min_chunk_sec: float,
-    audio_root: str | None,
-    sample_rate: int = 32000,
-    metadata_only: bool = True,
-    shuffle_buffer_size: int = 50_000,
-    max_stream_passes: int = 5,
+    rewrite_hf_paths: bool = False,
+    min_top1_prob: float | None = None,
+    exclude_filepaths: frozenset[str] | None = None,
 ) -> tuple[list[dict], dict[str, Any]]:
-    """
-    Stream XCM and add segments until each class has filled its **quota_seconds**
-    (typically n_train × chunk_sec from BirdCleF).
-
-    Returns ``(xcm_segments, stats)``.
-    """
     remaining_sec = {c: float(v) for c, v in quota_seconds.items() if v > 0.0}
     if not remaining_sec:
         return [], {}
 
-    allowed_f = frozenset(remaining_sec.keys())
+    path = Path(passed_segments_json)
+    if not path.is_file():
+        raise FileNotFoundError(f"passed_segments_json not found: {path}")
+
+    with open(path) as f:
+        rows: list[dict] = json.load(f)
+
+    rng = np.random.default_rng(seed)
+    rng.shuffle(rows)
+
     stats: dict[str, Any] = {
+        "rows_total": len(rows),
         "rows_scanned": 0,
         "segments_added": 0,
+        "skipped_no_class": 0,
+        "skipped_low_top1": 0,
         "skipped_no_path": 0,
-        "skipped_no_event": 0,
+        "skipped_pretrain_holdout": 0,
+        "skipped_no_duration": 0,
         "skipped_bad_window": 0,
-        "stream_passes": 0,
         "initial_quota_sec": dict(remaining_sec),
     }
 
-    logger.info(
-        "XCM enrich: %d classes, total quota %.0fs (metadata_only=%s, audio_root=%s)",
-        len(remaining_sec),
-        sum(remaining_sec.values()),
-        metadata_only,
-        audio_root,
-    )
-    if metadata_only and not audio_root:
-        logger.warning(
-            "XCM metadata_only without audio_root: paths may not resolve (use audio_root)."
-        )
-
-    ebird_names = get_xcm_ebird_names(hf_path, hf_name)
-    rng = np.random.default_rng(seed)
-    xcm_segments: list[dict] = []
+    dur_cache: dict[str, float] = {}
+    out: list[dict] = []
 
     def _all_done() -> bool:
         return all(v <= 1e-9 for v in remaining_sec.values())
 
-    if metadata_only:
-        for pass_idx in range(max_stream_passes):
-            if _all_done():
-                break
-            stats["stream_passes"] += 1
-            stream = _xcm_metadata_stream(
-                hf_path,
-                hf_name,
-                ebird_names=ebird_names,
-                allowed_species=allowed_f,
-                shuffle_seed=seed + pass_idx,
-                shuffle_buffer_size=shuffle_buffer_size,
-            )
-            pbar = tqdm(desc=f"XCM enrich pass {pass_idx + 1}", unit="row")
-            for row in stream:
-                if _all_done():
-                    break
-                stats["rows_scanned"] += 1
-                code = ebird_names[int(row["ebird_code"])]
-                if remaining_sec.get(code, 0.0) <= 0:
-                    continue
+    for row in tqdm(rows, desc="Relaxed / XCM enrich", unit="row"):
+        if _all_done():
+            break
+        stats["rows_scanned"] += 1
 
-                if not filter_bird_events(
-                    row.get("detected_events") or [],
-                    row.get("event_cluster"),
-                ):
-                    stats["skipped_no_event"] += 1
-                    continue
+        code = row.get("ebird_code")
+        if not isinstance(code, str) or remaining_sec.get(code, 0.0) <= 0:
+            stats["skipped_no_class"] += 1
+            continue
 
-                if not _resolve_audio_path(row, audio_root):
-                    stats["skipped_no_path"] += 1
-                    continue
-
-                new_segs = _pack_segments_from_row(
-                    row,
-                    code,
-                    remaining_sec,
-                    chunk_sec,
-                    min_chunk_sec,
-                    rng,
-                    audio_root,
-                )
-                if not new_segs:
-                    stats["skipped_bad_window"] += 1
-                else:
-                    xcm_segments.extend(new_segs)
-                    stats["segments_added"] += len(new_segs)
-                pbar.update(1)
-            pbar.close()
-    else:
-        ds = load_xcm_train_full_audio(hf_path, hf_name, sample_rate=sample_rate)
-
-        def _keep(ex: dict) -> bool:
-            return ebird_names[int(ex["ebird_code"])] in allowed_f
-
-        n_proc = min(4, max(1, os.cpu_count() or 1))
-        filtered = ds.filter(_keep, num_proc=n_proc)
-        shuffled = filtered.shuffle(seed=seed)
-        logger.info("XCM rows after species filter: %d", len(shuffled))
-
-        for i in tqdm(range(len(shuffled)), desc="XCM enrich", unit="row"):
-            if _all_done():
-                break
-            row = shuffled[i]
-            stats["rows_scanned"] += 1
-            code = ebird_names[int(row["ebird_code"])]
-            if remaining_sec.get(code, 0.0) <= 0:
+        if min_top1_prob is not None:
+            p = row.get("top1_prob")
+            if p is not None and float(p) <= min_top1_prob:
+                stats["skipped_low_top1"] += 1
                 continue
 
-            if not filter_bird_events(
-                row.get("detected_events") or [],
-                row.get("event_cluster"),
-            ):
-                stats["skipped_no_event"] += 1
-                continue
+        raw_fp = row.get("filepath")
+        if not raw_fp:
+            stats["skipped_no_path"] += 1
+            continue
+        fp = _normalize_filepath(str(raw_fp), rewrite_hf_paths)
+        if not Path(fp).is_file():
+            stats["skipped_no_path"] += 1
+            continue
 
-            if not _resolve_audio_path(row, audio_root):
-                stats["skipped_no_path"] += 1
-                continue
+        if exclude_filepaths and fp in exclude_filepaths:
+            stats["skipped_pretrain_holdout"] += 1
+            continue
 
-            new_segs = _pack_segments_from_row(
-                row,
-                code,
-                remaining_sec,
-                chunk_sec,
-                min_chunk_sec,
-                rng,
-                audio_root,
-            )
-            if not new_segs:
-                stats["skipped_bad_window"] += 1
-            else:
-                xcm_segments.extend(new_segs)
-                stats["segments_added"] += len(new_segs)
+        file_len = _duration_seconds(fp, dur_cache)
+        if file_len is None or file_len < min_chunk_sec:
+            stats["skipped_no_duration"] += 1
+            continue
+
+        try:
+            ev_start = float(row["start"])
+            ev_end = float(row["end"])
+        except (KeyError, TypeError, ValueError):
+            stats["skipped_bad_window"] += 1
+            continue
+
+        window = event_to_segment_window(
+            ev_start, ev_end, file_len, chunk_sec, min_chunk_sec, rng
+        )
+        if window is None:
+            stats["skipped_bad_window"] += 1
+            continue
+
+        t0, t1 = window
+        dur = t1 - t0
+        if dur <= 0:
+            stats["skipped_bad_window"] += 1
+            continue
+
+        out.append(
+            {
+                "filepath": fp,
+                "start": t0,
+                "end": t1,
+                "ebird_code": code,
+                "source": "relaxed",
+            }
+        )
+        remaining_sec[code] = max(0.0, remaining_sec[code] - dur)
+        stats["segments_added"] += 1
 
     stats["remaining_quota_sec"] = dict(remaining_sec)
     shortfall = {c: v for c, v in remaining_sec.items() if v > 1e-6}
     if shortfall:
         logger.warning(
-            "XCM: could not fill full quota for %d classes (remaining seconds, sample): %s",
+            "Enrich: quota shortfall for %d classes (sample): %s",
             len(shortfall),
             str(list(shortfall.items())[:5]),
         )
     logger.info(
-        "XCM enrich done: %d segments, rows_scanned=%d, stream_passes=%d",
-        len(xcm_segments),
+        "Enrich done: %d segments from %d rows scanned",
+        stats["segments_added"],
         stats["rows_scanned"],
-        stats["stream_passes"],
     )
-    return xcm_segments, stats
+    return out, stats
 
 
 def subset_ebird_to_id_for_classes(
@@ -436,3 +391,218 @@ def subset_ebird_to_id_for_classes(
             raise KeyError(f"ebird_code {code!r} missing from backbone {path}")
         out[code] = full_map[code]
     return out
+
+
+def load_segments_list_json(path: str | Path) -> list[dict]:
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"segments JSON not found: {p}")
+    with open(p) as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"expected JSON array of segments in {p}")
+    return data
+
+
+def main() -> None:
+    import argparse
+
+    from config import (
+        BC_EBIRD_TO_ID_PATH,
+        BC_SEGMENT_DIR,
+        BC_XCM_EXTRA_SEGMENTS_PER_CLASS,
+        BC_XCM_FINETUNE_EBIRD_TO_ID_JSON,
+        BC_XCM_MIN_TOP1_PROB,
+        BC_XCM_PASSED_SEGMENTS_JSON,
+        BC_XCM_PRETRAIN_SEGMENT_DIR,
+        BC_XCM_QUOTA_MODE,
+        CHUNK_LENGTH,
+        MIN_CHUNK_SEC,
+        SEED,
+        TEST_RATIO,
+        VAL_RATIO,
+    )
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Standalone XCM enrich: BirdCLEF segment JSON + finetune ebird_to_id + relaxed "
+            "passed_segments.json → merged pool, then train/val/test splits (and optional merged JSON)."
+        )
+    )
+    parser.add_argument(
+        "--birdclef-segments-json",
+        type=str,
+        required=True,
+        help="JSON array of {filepath, start, end, ebird_code, ...} (pre-split pool, same as birdclef_preprocessing/run.py before split)",
+    )
+    parser.add_argument(
+        "--finetune-ebird-to-id-json",
+        type=str,
+        default=str(BC_XCM_FINETUNE_EBIRD_TO_ID_JSON),
+        help="Finetune class map (default: birdclef.segment_dir/ebird_to_id.json or xcm_enrich.finetune_ebird_to_id_json)",
+    )
+    parser.add_argument(
+        "--passed-segments-json",
+        type=str,
+        default=str(BC_XCM_PASSED_SEGMENTS_JSON),
+        help="Relaxed XCM passed segments (default: config birdclef.xcm_enrich.passed_segments_json)",
+    )
+    parser.add_argument(
+        "--output-split-dir",
+        type=str,
+        default=str(BC_SEGMENT_DIR),
+        help="Write train_segments.json, val_segments.json, test_segments.json, ebird_to_id.json here",
+    )
+    parser.add_argument(
+        "--ebird-to-id",
+        type=str,
+        default=str(BC_EBIRD_TO_ID_PATH),
+        help="Backbone ebird_to_id.json for label ids in saved ebird_to_id.json (same as birdclef_preprocessing/run.py)",
+    )
+    parser.add_argument(
+        "--no-split-output",
+        action="store_true",
+        help="Do not write train/val/test/ebird_to_id to --output-split-dir",
+    )
+    parser.add_argument(
+        "--output-merged-json",
+        type=str,
+        default=None,
+        help="Optional path to also write BirdCLEF + XCM as one JSON array",
+    )
+    parser.add_argument(
+        "--output-xcm-only-json",
+        type=str,
+        default=None,
+        help="Optional path to write only segments added from passed_segments.json",
+    )
+    parser.add_argument(
+        "--output-stats-json",
+        type=str,
+        default=None,
+        help="Optional path to write enrich stats JSON",
+    )
+    parser.add_argument(
+        "--xcm-quota-mode",
+        type=str,
+        choices=("birdclef_train", "fixed_per_class"),
+        default=BC_XCM_QUOTA_MODE,
+        help=(
+            "birdclef_train: quota = n_train×chunk per class from BirdCLEF JSON; "
+            "fixed_per_class: quota = --xcm-extra-segments-per-class × chunk for each finetune class"
+        ),
+    )
+    parser.add_argument(
+        "--xcm-extra-segments-per-class",
+        type=int,
+        default=BC_XCM_EXTRA_SEGMENTS_PER_CLASS,
+        help="With fixed_per_class: number of chunk_sec-long XCM segments to add per finetune class",
+    )
+    parser.add_argument("--chunk-sec", type=float, default=CHUNK_LENGTH)
+    parser.add_argument("--min-chunk-sec", type=float, default=MIN_CHUNK_SEC)
+    parser.add_argument("--val-ratio", type=float, default=VAL_RATIO)
+    parser.add_argument("--test-ratio", type=float, default=TEST_RATIO)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument(
+        "--rewrite-hf-paths",
+        action="store_true",
+        help="Rewrite /workspace/.hf_home/ prefixes in segment paths",
+    )
+    parser.add_argument(
+        "--min-top1-prob",
+        type=float,
+        default=None,
+        help="Skip passed rows with top1_prob <= this (default: config birdclef.xcm_enrich.min_top1_prob)",
+    )
+    parser.add_argument(
+        "--pretrain-segment-dir",
+        type=str,
+        default=str(BC_XCM_PRETRAIN_SEGMENT_DIR) if BC_XCM_PRETRAIN_SEGMENT_DIR else None,
+        help=(
+            "Pretrain segment dir with val_segments.json / test_segments.json. "
+            "Recordings in those holdout sets are excluded from enrichment to "
+            "prevent data leakage (default: config birdclef.xcm_enrich.pretrain_segment_dir)"
+        ),
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Warnings only",
+    )
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.WARNING if args.quiet else logging.INFO,
+        format="%(levelname)s: %(message)s",
+        force=True,
+    )
+
+    min_tp = BC_XCM_MIN_TOP1_PROB if args.min_top1_prob is None else args.min_top1_prob
+
+    birdclef = load_segments_list_json(args.birdclef_segments_json)
+    xcm_segs, _finetune_map, stats = enrich_with_xcm_from_jsons(
+        birdclef,
+        finetune_ebird_to_id_json=args.finetune_ebird_to_id_json,
+        passed_segments_json=args.passed_segments_json,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        seed=args.seed,
+        chunk_sec=args.chunk_sec,
+        min_chunk_sec=args.min_chunk_sec,
+        rewrite_hf_paths=args.rewrite_hf_paths,
+        min_top1_prob=min_tp,
+        quota_mode=args.xcm_quota_mode,
+        xcm_extra_segments_per_class=args.xcm_extra_segments_per_class,
+        pretrain_segment_dir=args.pretrain_segment_dir,
+    )
+
+    merged = list(birdclef) + list(xcm_segs)
+    logger.info(
+        "Merged pool: %d segments (%d birdclef + %d xcm)",
+        len(merged),
+        len(birdclef),
+        len(xcm_segs),
+    )
+
+    if not args.no_split_output:
+        splits = split_segments(
+            merged, args.val_ratio, args.test_ratio, args.seed
+        )
+        split_dir = Path(args.output_split_dir)
+        save_segments(
+            split_dir,
+            splits,
+            backbone_ebird_to_id_path=args.ebird_to_id,
+        )
+        logger.info(
+            "Splits -> %s (train=%d val=%d test=%d)",
+            split_dir,
+            len(splits["train"]),
+            len(splits["val"]),
+            len(splits["test"]),
+        )
+
+    if args.output_merged_json:
+        out_merged = Path(args.output_merged_json)
+        out_merged.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_merged, "w") as f:
+            json.dump(merged, f, indent=2)
+        logger.info("Wrote merged JSON -> %s", out_merged)
+
+    if args.output_xcm_only_json:
+        p = Path(args.output_xcm_only_json)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w") as f:
+            json.dump(xcm_segs, f, indent=2)
+        logger.info("Wrote %d xcm-only segments -> %s", len(xcm_segs), p)
+
+    if args.output_stats_json:
+        p = Path(args.output_stats_json)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w") as f:
+            json.dump(stats, f, indent=2)
+        logger.info("Wrote enrich stats -> %s", p)
+
+
+if __name__ == "__main__":
+    main()

@@ -3,6 +3,7 @@ import torch
 import torchaudio
 from pathlib import Path
 
+from audiocraft.utils.autocast import TorchAutocast
 
 from config import (
     DEVICE,
@@ -96,11 +97,9 @@ def load_finetuned_model(
     *,
     lora_rank=None,
     lora_alpha=None,
+    use_bf16=False,
 ):
-    """Load full-finetune or LoRA checkpoints (LoRA is detected by ``*.lora_A`` keys)."""
-    # Always unpickle on CPU: training checkpoints include optimizer + scheduler tensors
-    # (~several × LM size). Mapping them to CUDA OOMs on 16GB before the model loads.
-    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     lm_sd = ckpt["lm_state_dict"]
     ckpt.pop("optimizer_state_dict", None)
@@ -128,6 +127,15 @@ def load_finetuned_model(
     audiogen.lm.load_state_dict(lm_sd)
     audiogen.lm.eval()
 
+    if use_bf16:
+        dev = torch.device(device)
+        if dev.type != "cuda":
+            raise ValueError("use_bf16=True requires CUDA (bfloat16 LM weights).")
+        audiogen.lm.to(torch.bfloat16)
+        audiogen.autocast = TorchAutocast(
+            enabled=True, device_type="cuda", dtype=torch.bfloat16
+        )
+
     return {
         "audiogen": audiogen,
         "ebird_to_id": ebird_to_id,
@@ -137,6 +145,7 @@ def load_finetuned_model(
         "epoch": ckpt.get("epoch"),
         "val_loss": ckpt.get("val_loss"),
         "used_lora": inferred_rank is not None,
+        "use_bf16": bool(use_bf16),
     }
 
 
@@ -162,6 +171,11 @@ def main():
         default=None,
         help="Override LoRA alpha when loading a LoRA checkpoint (default: ckpt or config by stage)",
     )
+    parser.add_argument(
+        "--bf16",
+        action="store_true",
+        help="Load LM in bfloat16 and use bf16 autocast (CUDA only; lower VRAM than default fp16 autocast)",
+    )
     args = parser.parse_args()
 
     device = torch.device(DEVICE)
@@ -173,6 +187,7 @@ def main():
         device=str(device),
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
+        use_bf16=args.bf16,
     )
     audiogen = result["audiogen"]
     ebird_to_id = result["ebird_to_id"]
