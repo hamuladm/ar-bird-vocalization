@@ -34,119 +34,131 @@ def _lora_alpha_for_checkpoint(ckpt):
     return float(AG_STAGE2.lora_alpha)
 
 
-@torch.no_grad()
-def generate_for_species(
-    audiogen,
-    species_id,
-    duration=AG_GEN_DURATION,
-    temperature=AG_GEN_TEMPERATURE,
-    top_k=AG_GEN_TOP_K,
-    cfg_coef=AG_GEN_CFG_COEF,
-):
-    audiogen.set_generation_params(
-        duration=duration,
-        temperature=temperature,
-        top_k=top_k,
-        cfg_coef=cfg_coef,
-        use_sampling=True,
-    )
+class AudiogenGenerator:
+    def __init__(self, checkpoint_path, device=DEVICE, lora_rank=None,
+                 lora_alpha=None, use_bf16=False):
+        self.device = torch.device(device)
 
-    conditions = make_species_conditions([species_id])
-    lm = audiogen.lm
-    lm.eval()
+        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
 
-    with audiogen.autocast:
-        total_gen_len = int(duration * audiogen.frame_rate)
-        gen_tokens = lm.generate(
-            prompt=None,
-            conditions=conditions,
-            max_gen_len=total_gen_len,
-            use_sampling=True,
-            temp=temperature,
+        lm_sd = ckpt["lm_state_dict"]
+        ckpt.pop("optimizer_state_dict", None)
+        ckpt.pop("scheduler_state_dict", None)
+
+        self.ebird_to_id = ckpt["ebird_to_id"]
+        self.id_to_ebird = {i: c for c, i in self.ebird_to_id.items()}
+        self.n_species = ckpt["n_species"]
+
+        self.audiogen, _ = load_audiogen(self.n_species, device=str(self.device))
+
+        inferred_rank = _lora_rank_from_state_dict(lm_sd)
+        if inferred_rank is not None:
+            if lora_rank is not None:
+                rank = lora_rank
+            elif "lora_rank" in ckpt:
+                rank = int(ckpt["lora_rank"])
+            else:
+                rank = inferred_rank
+            alpha = (
+                float(lora_alpha)
+                if lora_alpha is not None
+                else _lora_alpha_for_checkpoint(ckpt)
+            )
+            apply_lora(self.audiogen.lm, rank=rank, alpha=alpha)
+
+        self.audiogen.lm.load_state_dict(lm_sd)
+        self.audiogen.lm.eval()
+
+        if use_bf16:
+            if self.device.type != "cuda":
+                raise ValueError("use_bf16=True requires CUDA.")
+            self.audiogen.lm.to(torch.bfloat16)
+            self.audiogen.autocast = TorchAutocast(
+                enabled=True, device_type="cuda", dtype=torch.bfloat16
+            )
+
+        self.sample_rate = self.audiogen.sample_rate
+        self.stage = ckpt.get("stage")
+        self.epoch = ckpt.get("epoch")
+        self.val_loss = ckpt.get("val_loss")
+        self.used_lora = inferred_rank is not None
+
+    @classmethod
+    def from_model(cls, audiogen, ebird_to_id, device=DEVICE):
+        obj = cls.__new__(cls)
+        obj.device = torch.device(device)
+        obj.audiogen = audiogen
+        obj.ebird_to_id = ebird_to_id
+        obj.id_to_ebird = {i: c for c, i in ebird_to_id.items()}
+        obj.n_species = len(ebird_to_id)
+        obj.sample_rate = audiogen.sample_rate
+        obj.stage = None
+        obj.epoch = None
+        obj.val_loss = None
+        obj.used_lora = False
+        return obj
+
+    @torch.no_grad()
+    def generate(self, species_id, duration=AG_GEN_DURATION,
+                 temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
+                 cfg_coef=AG_GEN_CFG_COEF):
+        self.audiogen.set_generation_params(
+            duration=duration,
+            temperature=temperature,
             top_k=top_k,
             cfg_coef=cfg_coef,
+            use_sampling=True,
         )
 
-    return audiogen.compression_model.decode(gen_tokens, None)
+        conditions = make_species_conditions([species_id])
+        lm = self.audiogen.lm
+        lm.eval()
 
+        with self.audiogen.autocast:
+            total_gen_len = int(duration * self.audiogen.frame_rate)
+            gen_tokens = lm.generate(
+                prompt=None,
+                conditions=conditions,
+                max_gen_len=total_gen_len,
+                use_sampling=True,
+                temp=temperature,
+                top_k=top_k,
+                cfg_coef=cfg_coef,
+            )
 
-@torch.no_grad()
-def generate_audio_samples(
-    audiogen,
-    id_to_ebird,
-    class_ids,
-    duration=AG_GEN_DURATION,
-    temperature=AG_GEN_TEMPERATURE,
-    top_k=AG_GEN_TOP_K,
-    cfg_coef=AG_GEN_CFG_COEF,
-):
-    samples = []
-    for cid in class_ids:
-        name = id_to_ebird.get(cid, f"class_{cid}")
-        audio = generate_for_species(
-            audiogen, cid, duration, temperature, top_k, cfg_coef
-        )
-        audio_np = audio[0, 0].cpu().numpy()
-        samples.append((name, audio_np, audiogen.sample_rate))
-    return samples
+        audio = self.audiogen.compression_model.decode(gen_tokens, None)
+        return audio[0, 0].cpu().numpy()
 
-
-def load_finetuned_model(
-    checkpoint_path,
-    device="cuda",
-    *,
-    lora_rank=None,
-    lora_alpha=None,
-    use_bf16=False,
-):
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-
-    lm_sd = ckpt["lm_state_dict"]
-    ckpt.pop("optimizer_state_dict", None)
-    ckpt.pop("scheduler_state_dict", None)
-
-    ebird_to_id = ckpt["ebird_to_id"]
-    id_to_ebird = {i: c for c, i in ebird_to_id.items()}
-    n_species = ckpt["n_species"]
-
-    audiogen, _ = load_audiogen(n_species, device=device)
-    inferred_rank = _lora_rank_from_state_dict(lm_sd)
-    if inferred_rank is not None:
-        if lora_rank is not None:
-            rank = lora_rank
-        elif "lora_rank" in ckpt:
-            rank = int(ckpt["lora_rank"])
-        else:
-            rank = inferred_rank
-        alpha = (
-            float(lora_alpha)
-            if lora_alpha is not None
-            else _lora_alpha_for_checkpoint(ckpt)
-        )
-        apply_lora(audiogen.lm, rank=rank, alpha=alpha)
-    audiogen.lm.load_state_dict(lm_sd)
-    audiogen.lm.eval()
-
-    if use_bf16:
-        dev = torch.device(device)
-        if dev.type != "cuda":
-            raise ValueError("use_bf16=True requires CUDA (bfloat16 LM weights).")
-        audiogen.lm.to(torch.bfloat16)
-        audiogen.autocast = TorchAutocast(
-            enabled=True, device_type="cuda", dtype=torch.bfloat16
+    @torch.no_grad()
+    def generate_batch(self, species_id, k, duration=AG_GEN_DURATION,
+                       temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
+                       cfg_coef=AG_GEN_CFG_COEF):
+        self.audiogen.set_generation_params(
+            duration=duration,
+            temperature=temperature,
+            top_k=top_k,
+            cfg_coef=cfg_coef,
+            use_sampling=True,
         )
 
-    return {
-        "audiogen": audiogen,
-        "ebird_to_id": ebird_to_id,
-        "id_to_ebird": id_to_ebird,
-        "n_species": n_species,
-        "stage": ckpt.get("stage"),
-        "epoch": ckpt.get("epoch"),
-        "val_loss": ckpt.get("val_loss"),
-        "used_lora": inferred_rank is not None,
-        "use_bf16": bool(use_bf16),
-    }
+        conditions = make_species_conditions([species_id] * k)
+        lm = self.audiogen.lm
+        lm.eval()
+
+        with self.audiogen.autocast:
+            total_gen_len = int(duration * self.audiogen.frame_rate)
+            gen_tokens = lm.generate(
+                prompt=None,
+                conditions=conditions,
+                max_gen_len=total_gen_len,
+                use_sampling=True,
+                temp=temperature,
+                top_k=top_k,
+                cfg_coef=cfg_coef,
+            )
+
+        audio = self.audiogen.compression_model.decode(gen_tokens, None)
+        return [audio[i, 0].cpu().numpy() for i in range(audio.shape[0])]
 
 
 def main():
@@ -159,72 +171,49 @@ def main():
     parser.add_argument("--class-name", type=str, default=None)
     parser.add_argument("--num-samples", type=int, default=1)
     parser.add_argument("--list-classes", action="store_true")
-    parser.add_argument(
-        "--lora-rank",
-        type=int,
-        default=None,
-        help="Override LoRA rank when loading a LoRA checkpoint (default: infer from weights)",
-    )
-    parser.add_argument(
-        "--lora-alpha",
-        type=float,
-        default=None,
-        help="Override LoRA alpha when loading a LoRA checkpoint (default: ckpt or config by stage)",
-    )
-    parser.add_argument(
-        "--bf16",
-        action="store_true",
-        help="Load LM in bfloat16 and use bf16 autocast (CUDA only; lower VRAM than default fp16 autocast)",
-    )
+    parser.add_argument("--lora-rank", type=int, default=None)
+    parser.add_argument("--lora-alpha", type=float, default=None)
+    parser.add_argument("--bf16", action="store_true")
     args = parser.parse_args()
 
-    device = torch.device(DEVICE)
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    result = load_finetuned_model(
+    gen = AudiogenGenerator(
         args.checkpoint,
-        device=str(device),
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         use_bf16=args.bf16,
     )
-    audiogen = result["audiogen"]
-    ebird_to_id = result["ebird_to_id"]
-    id_to_ebird = result["id_to_ebird"]
-    n_species = result["n_species"]
 
     if args.list_classes:
-        for cid in sorted(id_to_ebird.keys()):
-            print(f"  {cid:4d}: {id_to_ebird[cid]}")
+        for cid in sorted(gen.id_to_ebird.keys()):
+            print(f"  {cid:4d}: {gen.id_to_ebird[cid]}")
         return
 
     if args.class_name:
-        if args.class_name not in ebird_to_id:
+        if args.class_name not in gen.ebird_to_id:
             print(f"Unknown class: {args.class_name}")
             return
-        class_id = ebird_to_id[args.class_name]
+        class_id = gen.ebird_to_id[args.class_name]
     elif args.class_id is not None:
         class_id = args.class_id
     else:
         class_id = None
 
-    sr = audiogen.sample_rate
-    stage = result["stage"]
-
     for i in range(args.num_samples):
         sample_class = (
-            class_id if class_id is not None else np.random.randint(0, n_species)
+            class_id if class_id is not None else np.random.randint(0, gen.n_species)
         )
-        class_name = id_to_ebird.get(sample_class, f"class_{sample_class}")
+        class_name = gen.id_to_ebird.get(sample_class, f"class_{sample_class}")
 
-        audio = generate_for_species(audiogen, sample_class)
-        audio_np = audio[0, 0].cpu()
+        audio = gen.generate(sample_class)
+        wav = torch.from_numpy(audio).unsqueeze(0)
 
-        fname = f"{class_name}_stage{stage}_t{AG_GEN_TEMPERATURE}_{i:03d}.wav"
+        fname = f"{class_name}_stage{gen.stage}_t{AG_GEN_TEMPERATURE}_{i:03d}.wav"
         filepath = output_dir / fname
-        torchaudio.save(str(filepath), audio_np.unsqueeze(0), sr)
-        print(f"Saved: {filepath} ({audio_np.shape[0] / sr:.2f}s)")
+        torchaudio.save(str(filepath), wav, gen.sample_rate)
+        print(f"Saved: {filepath} ({audio.shape[0] / gen.sample_rate:.2f}s)")
 
 
 if __name__ == "__main__":

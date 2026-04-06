@@ -191,25 +191,25 @@ class BackbonePretrainer:
             )
 
             if self.use_wandb:
-                from generator.snac_generator import generate_audio_samples
+                from generator.llama_generator import LlamaGenerator
 
+                gen = LlamaGenerator.from_model(
+                    self.model, self.snac_model, self.ebird_to_id,
+                    device=str(self.device),
+                )
                 log_dict = {
                     "epoch": epoch,
                     "train_loss_epoch": train_loss,
                     "val_loss": val_loss,
                 }
-                samples = generate_audio_samples(
-                    self.model,
-                    self.snac_model,
-                    self.device,
-                    self.id_to_ebird,
-                    class_ids=self.sample_class_ids,
-                    max_length=MAX_SEQ_LEN,
-                )
-                for name, audio, sr in samples:
-                    log_dict[f"audio/{name}"] = wandb.Audio(
-                        audio, sample_rate=sr, caption=f"{name}_epoch{epoch}"
-                    )
+                for cid in self.sample_class_ids:
+                    name = self.id_to_ebird.get(cid, f"class_{cid}")
+                    audio = gen.generate(cid)
+                    if audio is not None:
+                        log_dict[f"audio/{name}"] = wandb.Audio(
+                            audio, sample_rate=gen.sample_rate,
+                            caption=f"{name}_epoch{epoch}",
+                        )
                 wandb.log(log_dict)
 
             if val_loss < self.best_val_loss:

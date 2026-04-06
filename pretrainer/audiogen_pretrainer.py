@@ -98,10 +98,16 @@ class AudioGenPretrainer:
         return total_loss / max(n_steps, 1)
 
     def _generate_samples(self):
-        from generator.audiogen_generator import generate_audio_samples
-        return generate_audio_samples(
-            self.audiogen, self.id_to_ebird, self.sample_class_ids,
+        from generator.audiogen_generator import AudiogenGenerator
+        gen = AudiogenGenerator.from_model(
+            self.audiogen, self.ebird_to_id, device=str(self.device),
         )
+        samples = []
+        for cid in self.sample_class_ids:
+            name = self.id_to_ebird.get(cid, f"class_{cid}")
+            audio = gen.generate(cid)
+            samples.append((name, audio, gen.sample_rate))
+        return samples
 
     def _eval_and_checkpoint(
         self, val_loader, optimizer, scheduler, stage, stage_dir,

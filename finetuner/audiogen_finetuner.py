@@ -222,21 +222,22 @@ class AudioGenFinetuner:
             )
 
             if wandb.run:
-                from generator.audiogen_generator import generate_audio_samples
+                from generator import AudiogenGenerator
 
+                gen = AudiogenGenerator.from_model(
+                    self.audiogen, self.ebird_to_id, device=str(self.device),
+                )
                 log_dict = {
                     f"stage{stage}/train_loss_epoch": train_loss,
                     f"stage{stage}/val_loss": val_loss,
                     f"stage{stage}/epoch": epoch,
                 }
-                samples = generate_audio_samples(
-                    self.audiogen,
-                    self.id_to_ebird,
-                    class_ids=self.sample_class_ids,
-                )
-                for name, audio_np, sr in samples:
+                for cid in self.sample_class_ids:
+                    name = self.id_to_ebird.get(cid, f"class_{cid}")
+                    audio_np = gen.generate(cid)
                     log_dict[f"audio/{name}"] = wandb.Audio(
-                        audio_np, sample_rate=sr, caption=f"{name}_s{stage}_e{epoch}"
+                        audio_np, sample_rate=gen.sample_rate,
+                        caption=f"{name}_s{stage}_e{epoch}",
                     )
                 wandb.log(log_dict)
 

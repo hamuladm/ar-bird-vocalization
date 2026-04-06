@@ -6,8 +6,8 @@ from pathlib import Path
 
 import torch
 
-from config import DEVICE, MAX_SEQ_LEN, SNAC_GEN_TEMPERATURE, SNAC_GEN_TOP_K
-from generator.snac_generator import load_generation_models, generate_audio_samples
+from config import DEVICE, SNAC_GEN_TEMPERATURE, SNAC_GEN_TOP_K
+from generator import LlamaGenerator
 from evaluation.embeddings import (
     EvalEmbedder,
     extract_embeddings_from_directory,
@@ -46,35 +46,21 @@ def _run_segment_mode(args, metrics_to_compute):
         segments = json.load(f)
 
     class_counts = Counter(seg["ebird_code"] for seg in segments)
-    result = load_generation_models(args.checkpoint, device)
+    gen = LlamaGenerator(args.checkpoint, device=str(device))
 
-    model = result["model"]
-    snac_model = result["snac_model"]
-    ebird_to_id = result["ebird_to_id"]
-    id_to_ebird = result["id_to_ebird"]
-
-    known_classes = sorted(c for c in class_counts if c in ebird_to_id)
+    known_classes = sorted(c for c in class_counts if c in gen.ebird_to_id)
 
     if args.max_classes is not None and args.max_classes < len(known_classes):
         random.seed(42)
         known_classes = sorted(random.sample(known_classes, args.max_classes))
 
-    class_ids = []
+    gen_arrays = []
     for ebird_code in known_classes:
-        class_ids.extend([ebird_to_id[ebird_code]] * args.num_samples_per_class)
-
-    gen_samples = generate_audio_samples(
-        model,
-        snac_model,
-        device,
-        id_to_ebird,
-        class_ids,
-        max_length=MAX_SEQ_LEN,
-        temperature=args.temperature,
-        top_k=args.top_k,
-    )
-
-    gen_arrays = [audio for _, audio, _ in gen_samples]
+        cid = gen.ebird_to_id[ebird_code]
+        for _ in range(args.num_samples_per_class):
+            audio = gen.generate(cid, temperature=args.temperature, top_k=args.top_k)
+            if audio is not None:
+                gen_arrays.append(audio)
     embedder = EvalEmbedder(device=args.device)
     gen_data = extract_embeddings_from_arrays(
         gen_arrays, embedder, batch_size=args.batch_size
@@ -104,7 +90,7 @@ def _run_segment_mode(args, metrics_to_compute):
         "mode": "segment",
         "checkpoint": args.checkpoint,
         "num_classes": len(known_classes),
-        "num_generated": len(gen_samples),
+        "num_generated": len(gen_arrays),
         "num_reference": len(ref_segments),
     }
     return results
