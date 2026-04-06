@@ -1,6 +1,0 @@
-[submodule "BirdSet"]
-	path = BirdSet
-	url = https://github.com/DBD-research-group/BirdSet.git
-[submodule "Orpheus-TTS"]
-	path = Orpheus-TTS
-	url = https://github.com/canopyai/Orpheus-TTS
