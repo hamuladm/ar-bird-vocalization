@@ -7,15 +7,17 @@ from pathlib import Path
 import torch
 
 from config import DEVICE, SNAC_GEN_TEMPERATURE, SNAC_GEN_TOP_K
-from generator import LlamaGenerator
+from generator.llama_generator import LlamaGenerator
 from evaluation.embeddings import (
     EvalEmbedder,
+    BirdNetEmbedder,
+    EncodecEmbedder,
     extract_embeddings_from_directory,
     extract_embeddings_from_segments,
     extract_embeddings_from_arrays,
     extract_embeddings_from_shards,
 )
-from evaluation.metrics import inception_score, compute_fad
+from evaluation.metrics import inception_score, compute_fad, classification_accuracy
 
 
 def parse_args():
@@ -33,11 +35,23 @@ def parse_args():
     dir_group.add_argument("--reference-dir", type=str, default=None)
 
     parser.add_argument("--test-segments", type=str, default=None)
-    parser.add_argument("--metrics", type=str, default="is,fad")
+    parser.add_argument("--metrics", type=str, default="is,fad,acc")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--device", type=str, default=DEVICE)
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument(
+        "--embedder", type=str, default="birdnet",
+        choices=["birdnet", "convnext", "encodec"],
+    )
     return parser.parse_args()
+
+
+def _make_embedder(args):
+    if args.embedder == "birdnet":
+        return BirdNetEmbedder(device=args.device)
+    if args.embedder == "encodec":
+        return EncodecEmbedder(device=args.device)
+    return EvalEmbedder(device=args.device)
 
 
 def _run_segment_mode(args, metrics_to_compute):
@@ -62,7 +76,7 @@ def _run_segment_mode(args, metrics_to_compute):
             audio = gen.generate(cid, temperature=args.temperature, top_k=args.top_k)
             if audio is not None:
                 gen_arrays.append(audio)
-    embedder = EvalEmbedder(device=args.device)
+    embedder = _make_embedder(args)
     gen_data = extract_embeddings_from_arrays(
         gen_arrays, embedder, batch_size=args.batch_size
     )
@@ -74,8 +88,9 @@ def _run_segment_mode(args, metrics_to_compute):
     )
 
     results = {}
+    has_probs = "probs" in gen_data
 
-    if "is" in metrics_to_compute:
+    if "is" in metrics_to_compute and has_probs and "probs" in ref_data:
         is_value = inception_score(gen_data["probs"])
         gt_is_value = inception_score(ref_data["probs"])
         results["inception_score"] = is_value
@@ -89,6 +104,7 @@ def _run_segment_mode(args, metrics_to_compute):
 
     results["metadata"] = {
         "mode": "segment",
+        "embedder": args.embedder,
         "checkpoint": args.checkpoint,
         "num_classes": len(known_classes),
         "num_generated": len(gen_arrays),
@@ -103,7 +119,7 @@ def _has_shards(directory):
 
 def _run_directory_mode(args, metrics_to_compute):
     gen_dir = Path(args.generated_dir)
-    embedder = EvalEmbedder(device=args.device)
+    embedder = _make_embedder(args)
 
     if _has_shards(gen_dir):
         gen_data = extract_embeddings_from_shards(
@@ -115,9 +131,16 @@ def _run_directory_mode(args, metrics_to_compute):
         )
 
     results = {}
+    has_probs = "probs" in gen_data
 
-    if "is" in metrics_to_compute:
+    if "is" in metrics_to_compute and has_probs:
         results["inception_score"] = inception_score(gen_data["probs"])
+
+    if "acc" in metrics_to_compute and has_probs and "gt_labels" in gen_data:
+        acc = classification_accuracy(
+            gen_data["probs"], gen_data["gt_labels"], embedder.idx_to_ebird,
+        )
+        results.update(acc)
 
     has_ref_segments = args.test_segments is not None
     has_ref_dir = args.reference_dir is not None
@@ -131,7 +154,7 @@ def _run_directory_mode(args, metrics_to_compute):
         ref_data = extract_embeddings_from_segments(
             segments, embedder, batch_size=args.batch_size
         )
-        if "is" in metrics_to_compute:
+        if "is" in metrics_to_compute and has_probs and "probs" in ref_data:
             gt_is = inception_score(ref_data["probs"])
             results["gt_inception_score"] = gt_is
             results["is_ratio"] = (
@@ -147,6 +170,7 @@ def _run_directory_mode(args, metrics_to_compute):
 
     results["metadata"] = {
         "mode": "directory",
+        "embedder": args.embedder,
         "generated_dir": str(gen_dir.resolve()),
     }
     if has_ref_segments:
@@ -177,7 +201,10 @@ def main():
         json.dump(results, f, indent=2)
 
     print(f"\nResults saved to {output_path}")
-    for key in ["inception_score", "gt_inception_score", "is_ratio", "fad"]:
+    for key in [
+        "inception_score", "gt_inception_score", "is_ratio", "fad",
+        "top1_accuracy", "top5_accuracy", "mean_target_prob",
+    ]:
         if key in results:
             print(f"  {key}: {results[key]:.4f}")
 

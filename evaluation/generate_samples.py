@@ -15,15 +15,14 @@ from config import (
     SNAC_GEN_TEMPERATURE,
     SNAC_GEN_TOP_K,
 )
-from evaluation.embeddings import EvalEmbedder
-from reranker import Reranker
+from reranker.reranker import Reranker
 
 logger = logging.getLogger(__name__)
 
 
 def _build_generator(args):
     if args.model_type == "audiogen":
-        from generator import AudiogenGenerator
+        from generator.audiogen_generator import AudiogenGenerator
         return AudiogenGenerator(
             args.checkpoint,
             device=args.device,
@@ -31,7 +30,7 @@ def _build_generator(args):
             lora_alpha=args.lora_alpha,
             use_bf16=args.bf16,
         )
-    from generator import LlamaGenerator
+    from generator.llama_generator import LlamaGenerator
     return LlamaGenerator(args.checkpoint, device=args.device)
 
 
@@ -75,7 +74,7 @@ def main():
     parser.add_argument("--model-type", type=str, required=True, choices=["audiogen", "llama"])
     parser.add_argument("--stage", type=str, required=True, choices=["pretrain", "finetune"])
     parser.add_argument("--test-segments", type=str, required=True)
-    parser.add_argument("--n-per-class", type=int, default=25)
+    parser.add_argument("--n-per-class", type=int, default=10)
     parser.add_argument("--k", type=int, default=8)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--device", type=str, default=DEVICE)
@@ -86,6 +85,10 @@ def main():
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--cfg-coef", type=float, default=AG_GEN_CFG_COEF)
     parser.add_argument("--duration", type=float, default=AG_GEN_DURATION)
+    parser.add_argument(
+        "--discriminator", type=str, default="birdnet",
+        choices=["birdnet", "convnext"],
+    )
     args = parser.parse_args()
 
     if args.temperature is None:
@@ -107,13 +110,27 @@ def main():
     test_ebird_codes = set(seg["ebird_code"] for seg in segments)
 
     generator = _build_generator(args)
-    embedder = EvalEmbedder(device=args.device)
+
+    if args.discriminator == "birdnet":
+        from evaluation.embeddings import BirdNetEmbedder
+        embedder = BirdNetEmbedder(device=args.device)
+    else:
+        from evaluation.embeddings import EvalEmbedder
+        embedder = EvalEmbedder(device=args.device)
+
     reranker = Reranker(generator, embedder, device=args.device)
 
-    classes = sorted(c for c in test_ebird_codes if c in generator.ebird_to_id)
+    generator_codes = set(generator.ebird_to_id)
+    if args.discriminator == "birdnet":
+        disc_codes = set(embedder.ebird_to_idx)
+    else:
+        id2label = embedder.model.config.id2label
+        disc_codes = {str(v).strip() for v in id2label.values()}
+
+    classes = sorted(c for c in test_ebird_codes if c in generator_codes and c in disc_codes)
     logger.info(
-        "generating %d samples/class for %d classes (k=%d), output=%s",
-        args.n_per_class, len(classes), args.k, output_dir,
+        "generating %d samples/class for %d classes (k=%d, disc=%s), output=%s",
+        args.n_per_class, len(classes), args.k, args.discriminator, output_dir,
     )
 
     gen_kwargs = _gen_kwargs(args, args.model_type)
@@ -142,6 +159,7 @@ def main():
         "checkpoint": args.checkpoint,
         "model_type": args.model_type,
         "stage": args.stage,
+        "discriminator": args.discriminator,
         "test_segments": args.test_segments,
         "n_per_class": args.n_per_class,
         "k": args.k,
