@@ -294,7 +294,7 @@ def extract_embeddings_from_segments(segments, embedder, batch_size=EVAL_BATCH_S
     target_sr = getattr(embedder, "sample_rate", EVAL_SAMPLE_RATE)
     waveforms = []
     for seg in segments:
-        seg["filepath"] = seg["filepath"].replace("/workspace/.hf_home/", "/home/dkham/.cache/huggingface/")
+        seg["filepath"] = seg["filepath"].replace("/home/dkham/.cache/huggingface/", "/workspace/.hf_home/")
         audio_np = load_segment(
             seg["filepath"], seg["start"], seg["end"], target_sr
         )

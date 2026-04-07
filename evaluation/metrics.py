@@ -8,6 +8,13 @@ def inception_score(probs, eps=1e-10):
     return float(np.exp(kl_divs.mean()))
 
 
+def inception_score_restricted(probs, keep_indices, eps=1e-10):
+    restricted = probs[:, keep_indices].copy()
+    row_sums = restricted.sum(axis=1, keepdims=True)
+    restricted = restricted / (row_sums + eps)
+    return inception_score(restricted, eps=eps)
+
+
 def classification_accuracy(probs, gt_labels, idx_to_ebird, top_k=(1, 5)):
     n = len(gt_labels)
     ebird_to_idx = {v: k for k, v in idx_to_ebird.items()}

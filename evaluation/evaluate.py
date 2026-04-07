@@ -17,7 +17,12 @@ from evaluation.embeddings import (
     extract_embeddings_from_arrays,
     extract_embeddings_from_shards,
 )
-from evaluation.metrics import inception_score, compute_fad, classification_accuracy
+from evaluation.metrics import (
+    inception_score,
+    inception_score_restricted,
+    compute_fad,
+    classification_accuracy,
+)
 
 
 def parse_args():
@@ -43,6 +48,10 @@ def parse_args():
         "--embedder", type=str, default="birdnet",
         choices=["birdnet", "convnext", "encodec"],
     )
+    parser.add_argument(
+        "--restrict-classes", type=str, default=None,
+        help="Path to ebird_to_id.json; restricts IS to only these classes",
+    )
     return parser.parse_args()
 
 
@@ -52,6 +61,17 @@ def _make_embedder(args):
     if args.embedder == "encodec":
         return EncodecEmbedder(device=args.device)
     return EvalEmbedder(device=args.device)
+
+
+def _resolve_restrict_indices(args, embedder):
+    if args.restrict_classes is None:
+        return None
+    if not hasattr(embedder, "idx_to_ebird"):
+        return None
+    with open(args.restrict_classes) as f:
+        restrict_codes = set(json.load(f).keys())
+    indices = [idx for idx, code in embedder.idx_to_ebird.items() if code in restrict_codes]
+    return sorted(indices) if indices else None
 
 
 def _run_segment_mode(args, metrics_to_compute):
@@ -132,9 +152,14 @@ def _run_directory_mode(args, metrics_to_compute):
 
     results = {}
     has_probs = "probs" in gen_data
+    restrict_idx = _resolve_restrict_indices(args, embedder)
 
     if "is" in metrics_to_compute and has_probs:
         results["inception_score"] = inception_score(gen_data["probs"])
+        if restrict_idx is not None:
+            results["inception_score_restricted"] = inception_score_restricted(
+                gen_data["probs"], restrict_idx,
+            )
 
     if "acc" in metrics_to_compute and has_probs and "gt_labels" in gen_data:
         acc = classification_accuracy(
@@ -160,6 +185,13 @@ def _run_directory_mode(args, metrics_to_compute):
             results["is_ratio"] = (
                 results["inception_score"] / gt_is if gt_is > 0 else float("nan")
             )
+            if restrict_idx is not None:
+                gt_is_r = inception_score_restricted(ref_data["probs"], restrict_idx)
+                results["gt_inception_score_restricted"] = gt_is_r
+                results["is_ratio_restricted"] = (
+                    results["inception_score_restricted"] / gt_is_r
+                    if gt_is_r > 0 else float("nan")
+                )
         if "fad" in metrics_to_compute:
             results["fad"] = compute_fad(gen_data["features"], ref_data["features"])
     elif has_ref_dir and "fad" in metrics_to_compute:
@@ -173,6 +205,9 @@ def _run_directory_mode(args, metrics_to_compute):
         "embedder": args.embedder,
         "generated_dir": str(gen_dir.resolve()),
     }
+    if restrict_idx is not None:
+        results["metadata"]["restrict_classes"] = args.restrict_classes
+        results["metadata"]["num_restrict_classes"] = len(restrict_idx)
     if has_ref_segments:
         results["metadata"]["test_segments"] = args.test_segments
         results["metadata"]["num_reference"] = len(segments)
@@ -202,8 +237,9 @@ def main():
 
     print(f"\nResults saved to {output_path}")
     for key in [
-        "inception_score", "gt_inception_score", "is_ratio", "fad",
-        "top1_accuracy", "top5_accuracy", "mean_target_prob",
+        "inception_score", "gt_inception_score", "is_ratio",
+        "inception_score_restricted", "gt_inception_score_restricted", "is_ratio_restricted",
+        "fad", "top1_accuracy", "top5_accuracy", "mean_target_prob",
     ]:
         if key in results:
             print(f"  {key}: {results[key]:.4f}")
