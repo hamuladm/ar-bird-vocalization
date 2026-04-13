@@ -15,7 +15,6 @@ from config import (
     SNAC_GEN_TEMPERATURE,
     SNAC_GEN_TOP_K,
 )
-from reranker.reranker import Reranker
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +88,7 @@ def main():
         "--discriminator", type=str, default="birdnet",
         choices=["birdnet", "convnext"],
     )
+    parser.add_argument("--no-reranker", action="store_true")
     args = parser.parse_args()
 
     if args.temperature is None:
@@ -111,26 +111,36 @@ def main():
 
     generator = _build_generator(args)
 
-    if args.discriminator == "birdnet":
-        from evaluation.embeddings import BirdNetEmbedder
-        embedder = BirdNetEmbedder(device=args.device)
+    use_reranker = not args.no_reranker
+    reranker = None
+
+    if use_reranker:
+        from reranker.reranker import Reranker
+
+        if args.discriminator == "birdnet":
+            from evaluation.embeddings import BirdNetEmbedder
+            embedder = BirdNetEmbedder(device=args.device)
+        else:
+            from evaluation.embeddings import EvalEmbedder
+            embedder = EvalEmbedder(device=args.device)
+
+        reranker = Reranker(generator, embedder, device=args.device)
+
+        generator_codes = set(generator.ebird_to_id)
+        if args.discriminator == "birdnet":
+            disc_codes = set(embedder.ebird_to_idx)
+        else:
+            id2label = embedder.model.config.id2label
+            disc_codes = {str(v).strip() for v in id2label.values()}
+
+        classes = sorted(c for c in test_ebird_codes if c in generator_codes and c in disc_codes)
     else:
-        from evaluation.embeddings import EvalEmbedder
-        embedder = EvalEmbedder(device=args.device)
+        generator_codes = set(generator.ebird_to_id)
+        classes = sorted(c for c in test_ebird_codes if c in generator_codes)
 
-    reranker = Reranker(generator, embedder, device=args.device)
-
-    generator_codes = set(generator.ebird_to_id)
-    if args.discriminator == "birdnet":
-        disc_codes = set(embedder.ebird_to_idx)
-    else:
-        id2label = embedder.model.config.id2label
-        disc_codes = {str(v).strip() for v in id2label.values()}
-
-    classes = sorted(c for c in test_ebird_codes if c in generator_codes and c in disc_codes)
     logger.info(
-        "generating %d samples/class for %d classes (k=%d, disc=%s), output=%s",
-        args.n_per_class, len(classes), args.k, args.discriminator, output_dir,
+        "generating %d samples/class for %d classes (reranker=%s, k=%d, disc=%s), output=%s",
+        args.n_per_class, len(classes), use_reranker, args.k, args.discriminator, output_dir,
     )
 
     gen_kwargs = _gen_kwargs(args, args.model_type)
@@ -139,7 +149,10 @@ def main():
         class_id = generator.ebird_to_id[ebird_code]
         waveforms = []
         for si in range(args.n_per_class):
-            audio = reranker.generate(class_id, k=args.k, **gen_kwargs)
+            if use_reranker:
+                audio = reranker.generate(class_id, k=args.k, **gen_kwargs)
+            else:
+                audio = generator.generate(class_id, **gen_kwargs)
             if audio is None:
                 logger.warning(
                     "class %s sample %d/%d: generation failed, skipping",
@@ -159,10 +172,11 @@ def main():
         "checkpoint": args.checkpoint,
         "model_type": args.model_type,
         "stage": args.stage,
-        "discriminator": args.discriminator,
+        "reranker": use_reranker,
+        "discriminator": args.discriminator if use_reranker else None,
         "test_segments": args.test_segments,
         "n_per_class": args.n_per_class,
-        "k": args.k,
+        "k": args.k if use_reranker else None,
         "num_classes": len(classes),
         "classes": classes,
         "sample_rate": generator.sample_rate,
