@@ -1,3 +1,4 @@
+import logging
 import math
 
 import numpy as np
@@ -20,10 +21,13 @@ from models.backbone import (
     extract_snac_codes,
     BOS_TOKEN,
     EOS_TOKEN,
+    PAD_TOKEN,
     CLASS_TOKEN_OFFSET,
 )
 from preprocessing.tokenize import unflatten_codes
 from utils.checkpoint import load_checkpoint
+
+logger = logging.getLogger(__name__)
 
 
 def _infer_vocab_size(state_dict, backbone):
@@ -66,7 +70,7 @@ def _decode_to_audio(snac_codes, snac_model, device):
 
 
 class LlamaGenerator:
-    def __init__(self, checkpoint_path, device=DEVICE):
+    def __init__(self, checkpoint_path, device=DEVICE, use_bf16=True):
         self.device = torch.device(device)
         self.sample_rate = SAMPLE_RATE
 
@@ -85,6 +89,11 @@ class LlamaGenerator:
         self.model.load_state_dict(ckpt["model_state_dict"])
         self.model = self.model.to(self.device).eval()
 
+        self.use_bf16 = use_bf16 and self.device.type == "cuda"
+        if self.use_bf16:
+            self.model = self.model.to(torch.bfloat16)
+            logger.info("LlamaGenerator: model cast to bfloat16")
+
         self.snac_model = SNAC.from_pretrained(SNAC_MODEL).eval().to(self.device)
 
         self.epoch = ckpt.get("epoch")
@@ -93,10 +102,12 @@ class LlamaGenerator:
 
     @classmethod
     def from_model(cls, model, snac_model, ebird_to_id, device=DEVICE):
+        """Wrap an existing (possibly training) model. No bf16 cast."""
         obj = cls.__new__(cls)
         obj.device = torch.device(device)
         obj.sample_rate = SAMPLE_RATE
         obj.model = model
+        obj.use_bf16 = False
         obj.snac_model = snac_model
         obj.ebird_to_id = ebird_to_id
         obj.id_to_ebird = {i: c for c, i in ebird_to_id.items()}
@@ -106,10 +117,28 @@ class LlamaGenerator:
         obj.val_loss = None
         return obj
 
+    def _build_prompt(self, class_id, batch_size=1):
+        cls_token = CLASS_TOKEN_OFFSET + class_id
+        prompt = torch.full(
+            (batch_size, 2), BOS_TOKEN, device=self.device, dtype=torch.long,
+        )
+        prompt[:, 0] = cls_token
+        return prompt
+
     @torch.no_grad()
     def generate(self, class_id, temperature=SNAC_GEN_TEMPERATURE, top_k=SNAC_GEN_TOP_K,
                  max_length=MAX_SEQ_LEN):
-        tokens = self._generate_tokens(class_id, max_length, temperature, top_k)
+        prompt = self._build_prompt(class_id, batch_size=1)
+        output = self.model.generate(
+            prompt,
+            max_new_tokens=max_length - 2,
+            do_sample=True,
+            temperature=temperature,
+            top_k=top_k,
+            eos_token_id=EOS_TOKEN,
+            pad_token_id=PAD_TOKEN,
+        )
+        tokens = output[0].cpu().numpy()
         snac_codes = extract_snac_codes(tokens)
         if len(snac_codes) < 15:
             return None
@@ -118,121 +147,27 @@ class LlamaGenerator:
     @torch.no_grad()
     def generate_batch(self, class_id, k, temperature=SNAC_GEN_TEMPERATURE,
                        top_k=SNAC_GEN_TOP_K, max_length=MAX_SEQ_LEN):
-        all_tokens = self._generate_tokens_batch(class_id, k, max_length, temperature, top_k)
+        prompt = self._build_prompt(class_id, batch_size=k)
+        outputs = self.model.generate(
+            prompt,
+            max_new_tokens=max_length - 2,
+            do_sample=True,
+            temperature=temperature,
+            top_k=top_k,
+            eos_token_id=EOS_TOKEN,
+            pad_token_id=PAD_TOKEN,
+        )
         waveforms = []
-        for tokens in all_tokens:
-            snac_codes = extract_snac_codes(tokens)
+        for i in range(k):
+            seq = outputs[i].cpu().numpy()
+            eos_mask = seq == EOS_TOKEN
+            if eos_mask.any():
+                seq = seq[: eos_mask.argmax()]
+            snac_codes = extract_snac_codes(seq)
             if len(snac_codes) < 15:
                 continue
             waveforms.append(_decode_to_audio(snac_codes, self.snac_model, self.device))
         return waveforms
-
-    def _generate_tokens(self, class_id, max_length, temperature, top_k):
-        self.model.eval()
-        n_positions = self.model.config.max_position_embeddings
-
-        cls_token = CLASS_TOKEN_OFFSET + class_id
-        input_ids = torch.tensor([[cls_token, BOS_TOKEN]], device=self.device, dtype=torch.long)
-        past_key_values = None
-
-        for _ in range(max_length - 2):
-            if past_key_values is None:
-                context = (
-                    input_ids
-                    if input_ids.shape[1] <= n_positions
-                    else input_ids[:, -n_positions:]
-                )
-                outputs = self.model(context, use_cache=True)
-                past_key_values = outputs.past_key_values
-            else:
-                token_in = input_ids[:, -1:]
-                outputs = self.model(
-                    token_in,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                )
-                past_key_values = outputs.past_key_values
-
-            logits = outputs.logits[:, -1, :] / temperature
-
-            if top_k > 0:
-                topk_vals = torch.topk(logits, top_k).values
-                logits = logits.clone()
-                logits[logits < topk_vals[:, -1:]] = float("-inf")
-
-            probs = torch.softmax(logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-
-            if next_token.item() == EOS_TOKEN:
-                break
-
-            input_ids = torch.cat([input_ids, next_token], dim=1)
-
-            if input_ids.shape[1] > n_positions:
-                past_key_values = None
-
-        return input_ids[0].cpu().numpy()
-
-    def _generate_tokens_batch(self, class_id, k, max_length, temperature, top_k):
-        self.model.eval()
-        n_positions = self.model.config.max_position_embeddings
-
-        cls_token = CLASS_TOKEN_OFFSET + class_id
-        input_ids = torch.full((k, 2), BOS_TOKEN, device=self.device, dtype=torch.long)
-        input_ids[:, 0] = cls_token
-
-        finished = torch.zeros(k, dtype=torch.bool, device=self.device)
-        past_key_values = None
-
-        for _ in range(max_length - 2):
-            if finished.all():
-                break
-
-            if past_key_values is None:
-                context = (
-                    input_ids
-                    if input_ids.shape[1] <= n_positions
-                    else input_ids[:, -n_positions:]
-                )
-                outputs = self.model(context, use_cache=True)
-                past_key_values = outputs.past_key_values
-            else:
-                token_in = input_ids[:, -1:]
-                outputs = self.model(
-                    token_in,
-                    past_key_values=past_key_values,
-                    use_cache=True,
-                )
-                past_key_values = outputs.past_key_values
-
-            logits = outputs.logits[:, -1, :] / temperature
-
-            if top_k > 0:
-                topk_vals = torch.topk(logits, top_k).values
-                logits = logits.clone()
-                logits[logits < topk_vals[:, -1:]] = float("-inf")
-
-            probs = torch.softmax(logits, dim=-1)
-            next_tokens = torch.multinomial(probs, num_samples=1)
-
-            next_tokens[finished] = EOS_TOKEN
-            newly_finished = (next_tokens.squeeze(-1) == EOS_TOKEN) & ~finished
-            finished = finished | newly_finished
-
-            input_ids = torch.cat([input_ids, next_tokens], dim=1)
-
-            if input_ids.shape[1] > n_positions:
-                past_key_values = None
-
-        results = []
-        for i in range(k):
-            seq = input_ids[i].cpu().numpy()
-            eos_mask = seq == EOS_TOKEN
-            if eos_mask.any():
-                seq = seq[: eos_mask.argmax()]
-            results.append(seq)
-
-        return results
 
 
 def main():
@@ -245,12 +180,13 @@ def main():
     parser.add_argument("--class-name", type=str, default=None)
     parser.add_argument("--num-samples", type=int, default=1)
     parser.add_argument("--list-classes", action="store_true")
+    parser.add_argument("--no-bf16", action="store_true")
     args = parser.parse_args()
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    gen = LlamaGenerator(args.checkpoint)
+    gen = LlamaGenerator(args.checkpoint, use_bf16=not args.no_bf16)
 
     if args.list_classes:
         for cid in sorted(gen.id_to_ebird.keys()):

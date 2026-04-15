@@ -32,7 +32,7 @@ def _build_generator(args):
             use_bf16=args.bf16,
         )
     from generator.llama_generator import LlamaGenerator
-    return LlamaGenerator(args.checkpoint, device=args.device)
+    return LlamaGenerator(args.checkpoint, device=args.device, use_bf16=args.bf16)
 
 
 def _default_output_dir(model_type, stage):
