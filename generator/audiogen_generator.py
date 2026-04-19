@@ -1,12 +1,15 @@
+import csv
 import numpy as np
 import torch
 import torchaudio
 from pathlib import Path
 
+from audiocraft.models import AudioGen
 from audiocraft.utils.autocast import TorchAutocast
 
 from config import (
     DEVICE,
+    AG_PRETRAINED,
     AG_GEN_DURATION,
     AG_GEN_TEMPERATURE,
     AG_GEN_TOP_K,
@@ -16,6 +19,8 @@ from config import (
 )
 from models.audiogen import load_audiogen, make_species_conditions
 from models.lora import apply_lora
+
+_TAXONOMY_PATH = Path(__file__).parent.parent / "data_relaxed" / "taxonomy" / "ebird_taxonomy.csv"
 
 
 def _lora_rank_from_state_dict(sd):
@@ -159,6 +164,96 @@ class AudiogenGenerator:
 
         audio = self.audiogen.compression_model.decode(gen_tokens, None)
         return [audio[i, 0].cpu().numpy() for i in range(audio.shape[0])]
+
+
+def _load_taxonomy(path=_TAXONOMY_PATH):
+    code_to_sci = {}
+    code_to_common = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            code = row.get("SPECIES_CODE", "").strip()
+            sci = row.get("SCIENTIFIC_NAME", "").strip()
+            common = row.get("COMMON_NAME", "").strip()
+            if code:
+                if sci:
+                    code_to_sci[code] = sci
+                if common:
+                    code_to_common[code] = common
+    return code_to_sci, code_to_common
+
+
+class TextAudiogenGenerator:
+    """Pretrained AudioGen with original T5 text conditioning (no finetuning).
+
+    Uses the vanilla ``facebook/audiogen-medium`` model, conditioned on
+    text prompts built from eBird taxonomy names.
+    """
+
+    PROMPT_TEMPLATES = {
+        "scientific": "Bird vocalization. {sci_name}.",
+        "common": "Bird vocalization. {common_name}.",
+        "descriptive": "Bird song in nature. {common_name} ({sci_name}).",
+    }
+
+    def __init__(self, ebird_codes, device=DEVICE, use_bf16=False,
+                 prompt_template="descriptive", taxonomy_path=_TAXONOMY_PATH):
+        self.device = torch.device(device)
+        self.audiogen = AudioGen.get_pretrained(AG_PRETRAINED, device=str(self.device))
+        self.sample_rate = self.audiogen.sample_rate
+
+        code_to_sci, code_to_common = _load_taxonomy(taxonomy_path)
+
+        self.ebird_to_id = {code: i for i, code in enumerate(sorted(ebird_codes))}
+        self.id_to_ebird = {i: code for code, i in self.ebird_to_id.items()}
+
+        if prompt_template in self.PROMPT_TEMPLATES:
+            self._template = self.PROMPT_TEMPLATES[prompt_template]
+        else:
+            self._template = prompt_template
+
+        self._prompts = {}
+        for code in ebird_codes:
+            sci = code_to_sci.get(code, code)
+            common = code_to_common.get(code, code)
+            self._prompts[code] = self._template.format(
+                sci_name=sci, common_name=common, ebird_code=code,
+            )
+
+        if use_bf16:
+            if self.device.type != "cuda":
+                raise ValueError("use_bf16=True requires CUDA.")
+            self.audiogen.lm.to(torch.bfloat16)
+            self.audiogen.autocast = TorchAutocast(
+                enabled=True, device_type="cuda", dtype=torch.bfloat16,
+            )
+
+    def _prompt_for(self, species_id):
+        code = self.id_to_ebird[species_id]
+        return self._prompts[code]
+
+    @torch.no_grad()
+    def generate(self, species_id, duration=AG_GEN_DURATION,
+                 temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
+                 cfg_coef=AG_GEN_CFG_COEF):
+        self.audiogen.set_generation_params(
+            duration=duration, temperature=temperature,
+            top_k=top_k, cfg_coef=cfg_coef, use_sampling=True,
+        )
+        prompt = self._prompt_for(species_id)
+        wav = self.audiogen.generate([prompt])
+        return wav[0, 0].cpu().numpy()
+
+    @torch.no_grad()
+    def generate_batch(self, species_id, k, duration=AG_GEN_DURATION,
+                       temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
+                       cfg_coef=AG_GEN_CFG_COEF):
+        self.audiogen.set_generation_params(
+            duration=duration, temperature=temperature,
+            top_k=top_k, cfg_coef=cfg_coef, use_sampling=True,
+        )
+        prompt = self._prompt_for(species_id)
+        wav = self.audiogen.generate([prompt] * k)
+        return [wav[i, 0].cpu().numpy() for i in range(wav.shape[0])]
 
 
 def main():

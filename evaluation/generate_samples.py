@@ -21,7 +21,7 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
-def _build_generator(args):
+def _build_generator(args, ebird_codes=None):
     if args.model_type == "audiogen":
         from generator.audiogen_generator import AudiogenGenerator
         return AudiogenGenerator(
@@ -30,6 +30,14 @@ def _build_generator(args):
             lora_rank=args.lora_rank,
             lora_alpha=args.lora_alpha,
             use_bf16=args.bf16,
+        )
+    if args.model_type == "audiogen_text":
+        from generator.audiogen_generator import TextAudiogenGenerator
+        return TextAudiogenGenerator(
+            ebird_codes,
+            device=args.device,
+            use_bf16=args.bf16,
+            prompt_template=args.prompt_template,
         )
     from generator.llama_generator import LlamaGenerator
     return LlamaGenerator(args.checkpoint, device=args.device, use_bf16=args.bf16)
@@ -40,7 +48,7 @@ def _default_output_dir(model_type, stage):
 
 
 def _gen_kwargs(args, model_type):
-    if model_type == "audiogen":
+    if model_type in ("audiogen", "audiogen_text"):
         return dict(
             duration=args.duration,
             temperature=args.temperature,
@@ -71,9 +79,11 @@ def _save_class_shard(output_dir, ebird_code, waveforms, sample_rate):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--model-type", type=str, required=True, choices=["audiogen", "llama"])
-    parser.add_argument("--stage", type=str, required=True, choices=["pretrain", "finetune"])
+    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--model-type", type=str, required=True,
+                        choices=["audiogen", "audiogen_text", "llama"])
+    parser.add_argument("--stage", type=str, required=True,
+                        choices=["pretrain", "finetune", "baseline"])
     parser.add_argument("--test-segments", type=str, required=True)
     parser.add_argument("--n-per-class", type=int, default=10)
     parser.add_argument("--k", type=int, default=8)
@@ -91,15 +101,25 @@ def main():
         choices=["birdnet", "convnext"],
     )
     parser.add_argument("--no-reranker", action="store_true")
+    parser.add_argument(
+        "--prompt-template", type=str, default="descriptive",
+        help="Text prompt template for audiogen_text: 'scientific', 'common', "
+             "'descriptive', or a custom format string with {sci_name}, {common_name}, {ebird_code}",
+    )
     args = parser.parse_args()
+
+    if args.model_type != "audiogen_text" and args.checkpoint is None:
+        parser.error("--checkpoint is required for model types other than audiogen_text")
 
     if args.temperature is None:
         args.temperature = (
-            AG_GEN_TEMPERATURE if args.model_type == "audiogen" else SNAC_GEN_TEMPERATURE
+            AG_GEN_TEMPERATURE if args.model_type in ("audiogen", "audiogen_text")
+            else SNAC_GEN_TEMPERATURE
         )
     if args.top_k is None:
         args.top_k = (
-            AG_GEN_TOP_K if args.model_type == "audiogen" else SNAC_GEN_TOP_K
+            AG_GEN_TOP_K if args.model_type in ("audiogen", "audiogen_text")
+            else SNAC_GEN_TOP_K
         )
 
     logging.basicConfig(level=logging.INFO, format="%(name)s | %(message)s")
@@ -114,9 +134,12 @@ def main():
     test_ebird_codes = set(seg["ebird_code"] for seg in segments)
     logger.info("found %d segments spanning %d unique classes", len(segments), len(test_ebird_codes))
 
-    logger.info("loading %s generator from %s", args.model_type, args.checkpoint)
+    if args.model_type == "audiogen_text":
+        logger.info("loading pretrained AudioGen with text conditioning (template=%s)", args.prompt_template)
+    else:
+        logger.info("loading %s generator from %s", args.model_type, args.checkpoint)
     t0 = time.time()
-    generator = _build_generator(args)
+    generator = _build_generator(args, ebird_codes=test_ebird_codes)
     logger.info("generator loaded in %.1fs (%d known classes)", time.time() - t0, len(generator.ebird_to_id))
 
     use_reranker = not args.no_reranker
@@ -235,6 +258,11 @@ def main():
         "total_failed": total_failed,
         "elapsed_seconds": round(elapsed, 1),
     }
+    if args.model_type == "audiogen_text":
+        metadata["prompt_template"] = args.prompt_template
+        metadata["prompts"] = {
+            code: generator._prompts[code] for code in classes if code in generator._prompts
+        }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
