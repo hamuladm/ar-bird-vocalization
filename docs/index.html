@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="description"
-    content="Autoregressive generation of bird vocalizations using class-conditioned language models over discrete audio tokens.">
+    content="Species-conditioned bird vocalization synthesis via autoregressive discrete-token models: a Transformer on hierarchical codec tokens and AudioGen with species embeddings.">
   <meta name="keywords"
     content="bird vocalization, audio generation, autoregressive, language model, SNAC, AudioGen, EnCodec">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -38,14 +38,6 @@
 
             <div class="column has-text-centered">
               <div class="publication-links">
-                <!-- Paper link -->
-                <!-- <span class="link-block">
-                  <a href="#" class="button is-normal is-rounded is-dark">
-                    <span class="icon"><i class="fas fa-file-pdf"></i></span>
-                    <span>Thesis</span>
-                  </a>
-                </span> -->
-                <!-- Code link -->
                 <span class="link-block">
                   <a href="https://github.com/hamuladm/ar-bird-vocalization"
                     class="button is-normal is-rounded is-dark">
@@ -61,18 +53,6 @@
     </div>
   </section>
 
-  <!-- Teaser -->
-  <section class="hero teaser">
-    <div class="container is-max-desktop">
-      <div class="hero-body has-text-centered">
-        <p class="subtitle is-5">
-          Three autoregressive approaches for generating bird vocalizations conditioned on species identity,
-          trained on discrete audio tokens from the BirdSet XCM dataset.
-        </p>
-      </div>
-    </div>
-  </section>
-
   <!-- Abstract -->
   <section class="section">
     <div class="container is-max-desktop">
@@ -81,26 +61,37 @@
           <h2 class="title is-3">Abstract</h2>
           <div class="content has-text-justified">
             <p>
-              This project explores autoregressive generation of bird vocalizations conditioned on species identity.
-              Three generation approaches are implemented and compared:
+              Bird vocalizations place a distinctive position in the landscape of audio signals. Unlike
+              human speech or music, they exhibit rapid frequency modulations, complex harmonic
+              structures and species-specific temporal patterning that vary dramatically across
+              thousands of birds. Despite this acoustic richness, bird vocalization generation remains a
+              largely underexplored task. The existing approaches operate in the spectrogram
+              domain through variational autoencoders or continuous diffusion models, both of which
+              depend on spectral inversion and do not model temporal dependencies at the token
+              level. Meanwhile, autoregressive generation over discrete tokens produced by neural
+              audio codecs has become the dominant paradigm for speech synthesis and general
+              audio generation, yet it has not been applied to avian bioacoustics, a domain whose
+              spectrotemporal characteristics differ fundamentally from the structured audio types
+              these methods were designed for.
             </p>
             <p>
-              <strong>(1) LLaMA + SNAC</strong> &mdash; a custom causal language model trained from scratch on discrete
-              SNAC audio tokens (32 kHz, 4-level codebook) with class-conditioned next-token prediction;
-              <strong>(2) AudioGen + Species Conditioner</strong> &mdash; Meta's AudioGen-medium fine-tuned with a
-              learned species embedding replacing the original text conditioner, trained via a three-stage freeze
-              schedule with LoRA;
-              <strong>(3) Ecogen VQ-VAE</strong> &mdash; a VQ-VAE operating on mel spectrograms, generating new samples
-              via latent-space augmentation.
+              This work investigates whether the autoregressive discrete-token paradigm can be
+              effectively transferred to species-conditioned bird vocalization synthesis. Two
+              complementary architectures are proposed: a Transformer language model trained from
+              scratch on hierarchical multi-scale codec tokens, and a large-scale text-to-audio model
+              whose conditioning mechanism is replaced with learned species embeddings. A
+              dedicated data preparation pipeline transforms noisy, imbalanced citizen-science
+              recordings into curated training set through classifier-driven filtering, event-level audio
+              extraction, and controlled cross-dataset enrichment. A multi-dimensional evaluation
+              protocol spanning three independent embedding spaces quantifies both species
+              fidelity and overall acoustic realism, accompanied by ablation studies on inference-time
+              reranking and sampling temperature.
             </p>
             <p>
-              The training data comes from the
-              <a href="https://huggingface.co/datasets/DBD-research-group/BirdSet">BirdSet XCM</a> dataset
-              and optionally <a href="https://www.kaggle.com/competitions/birdclef-2026">BirdCLEF</a> competition data,
-              with quality gating via a ConvNeXt classifier.
-              Objective evaluation uses Inception Score (IS), Fr&eacute;chet Audio Distance (FAD), and classification
-              accuracy via BirdNET, ConvNeXt, and EnCodec embedders. Subjective evaluation is conducted through
-              MOS listening tests delivered via Telegram.
+              Findings in this work establish that autoregressive codec-token generation is a
+              viable paradigm for such an unconventional audio domain and lay the groundwork
+              for future applications, including data augmentation for rare-species classifiers and
+              broader computational bioacoustics research.
             </p>
           </div>
         </div>
@@ -108,28 +99,28 @@
     </div>
   </section>
 
-  <!-- Methods Overview -->
+  <!-- Methods -->
   <section class="section" style="background: #fafafa;">
     <div class="container is-max-desktop">
       <h2 class="title is-3 has-text-centered">Methods</h2>
 
-      <div class="columns is-multiline">
-        <!-- Method 1 -->
-        <div class="column is-4">
+      <div class="columns">
+        <!-- LLaMA + SNAC -->
+        <div class="column is-6">
           <div class="method-card">
-            <span class="method-tag">From Scratch</span>
+            <span class="method-tag">Trained from scratch</span>
             <h4>LLaMA + SNAC</h4>
             <p>
-              A 12-layer causal language model (768-dim, 12 heads) trained from scratch on interleaved
+              A 12-layer causal language model (768-dim, 12 heads) trained on interleaved
               <a href="https://github.com/hubertsiuzdak/snac">SNAC</a> tokens.
               SNAC encodes 32 kHz audio into 4 hierarchical codebook levels (4096 entries each),
-              interleaved into 15 tokens per time step.
-              Species conditioning is via a class token prepended before BOS.
+              producing 15 tokens per time step. Species conditioning via a class token prepended before BOS.
             </p>
+            <img src="static/images/llama_nocolor.svg" alt="LLaMA + SNAC architecture" class="arch-img">
           </div>
         </div>
-        <!-- Method 2 -->
-        <div class="column is-4">
+        <!-- AudioGen -->
+        <div class="column is-6">
           <div class="method-card">
             <span class="method-tag">Fine-tuned</span>
             <h4>AudioGen + Species Conditioner</h4>
@@ -139,18 +130,7 @@
               Three-stage training: conditioner only &rarr; LoRA (rank 16, alpha 32) + conditioner &rarr;
               refined LoRA + conditioner.
             </p>
-          </div>
-        </div>
-        <!-- Method 3 -->
-        <div class="column is-4">
-          <div class="method-card">
-            <span class="method-tag">VQ-VAE</span>
-            <h4>Ecogen</h4>
-            <p>
-              A hierarchical VQ-VAE operating on mel spectrograms. New samples are generated by augmenting
-              latent codes via noise injection, interpolation between same-class latents, or sampling from
-              per-class latent statistics.
-            </p>
+            <img src="static/images/audiogen.png" alt="AudioGen + Species Conditioner architecture" class="arch-img">
           </div>
         </div>
       </div>
@@ -159,334 +139,91 @@
 
   <!-- Audio Samples -->
   <section class="section" id="audio-samples">
-    <div class="container is-max-desktop">
+    <div class="container is-max-widescreen">
       <h2 class="title is-3 has-text-centered">Audio Samples</h2>
       <p class="has-text-centered mb-5">
-        Listen to generated bird vocalizations from each model compared to ground-truth recordings.
-        <br>Select a species to hear the comparison.
+        Generated bird vocalizations from each model compared to ground-truth XCM recordings.
       </p>
 
-      <!-- Species selector -->
-      <div class="has-text-centered mb-5">
-        <div class="select is-medium">
-          <select id="species-select" onchange="updateAudioSamples()">
-            <option value="compot1" data-name="Common Potoo">Common Potoo</option>
-            <option value="trsowl" data-name="Tropical Screech-Owl">Tropical Screech-Owl</option>
-            <option value="whtdov" data-name="White-tipped Dove">White-tipped Dove</option>
-            <option value="greant1" data-name="Great Antshrike">Great Antshrike</option>
-            <option value="baffal1" data-name="Barred Forest-Falcon">Barred Forest-Falcon</option>
-            <option value="bobfly1" data-name="Boat-billed Flycatcher">Boat-billed Flycatcher</option>
-            <option value="coffal1" data-name="Collared Forest-Falcon">Collared Forest-Falcon</option>
-            <option value="pirfly1" data-name="Piratic Flycatcher">Piratic Flycatcher</option>
-            <option value="roahaw" data-name="Roadside Hawk">Roadside Hawk</option>
-            <option value="socfly1" data-name="Social Flycatcher">Social Flycatcher</option>
-            <option value="trokin" data-name="Tropical Kingbird">Tropical Kingbird</option>
-          </select>
-        </div>
-      </div>
-
-      <!-- Audio comparison -->
-      <div class="audio-grid" id="audio-comparison">
-        <div class="audio-grid-item">
-          <div class="label">Ground Truth</div>
-          <audio controls id="audio-gt">
-            <source id="src-gt" src="static/audio/compot1/gt.wav" type="audio/wav">
-          </audio>
-        </div>
-        <div class="audio-grid-item">
-          <div class="label">AudioGen + Species Conditioner</div>
-          <div class="sublabel">Fine-tuned, BirdNET-reranked</div>
-          <audio controls id="audio-audiogen">
-            <source id="src-audiogen" src="static/audio/compot1/audiogen.wav" type="audio/wav">
-          </audio>
-        </div>
-        <div class="audio-grid-item">
-          <div class="label">LLaMA + SNAC</div>
-          <div class="sublabel">Fine-tuned, BirdNET-reranked</div>
-          <audio controls id="audio-llama">
-            <source id="src-llama" src="static/audio/compot1/llama.wav" type="audio/wav">
-          </audio>
-        </div>
-        <div class="audio-grid-item">
-          <div class="label">Ecogen VQ-VAE</div>
-          <div class="sublabel">Random forest fine-tuned</div>
-          <audio controls id="audio-rf">
-            <source id="src-rf" src="static/audio/compot1/rf.wav" type="audio/wav">
-          </audio>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Results -->
-  <section class="section" style="background: #fafafa;">
-    <div class="container is-max-desktop">
-      <h2 class="title is-3 has-text-centered">Results</h2>
-
-      <!-- Tab selector -->
-      <div class="tabs is-centered is-boxed mb-4">
-        <ul>
-          <li class="is-active" id="tab-finetune" onclick="switchResultsTab('finetune')"><a>Fine-tune Set</a></li>
-          <li id="tab-pretrain" onclick="switchResultsTab('pretrain')"><a>Pretrain Set</a></li>
-        </ul>
-      </div>
-
-      <!-- Fine-tune results -->
-      <div id="results-finetune">
-        <p class="has-text-centered mb-4">
-          11 classes, 50 samples/class (550 total). ConvNeXt embedder with 3s chunking.
-        </p>
-        <div class="table-responsive">
-          <table class="results-table">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>IS &uarr;</th>
-                <th>IS Ratio &uarr;</th>
-                <th>Top-1 Acc &uarr;</th>
-                <th>Top-5 Acc &uarr;</th>
-                <th>FAD &darr;</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="model-name">AudioGen (fine-tuned)</td>
-                <td class="best">12.65</td>
-                <td class="best">0.878</td>
-                <td class="best">0.675</td>
-                <td class="best">0.795</td>
-                <td>129.90</td>
-              </tr>
-              <tr>
-                <td class="model-name">AudioGen (no rerank)</td>
-                <td>11.91</td>
-                <td>0.827</td>
-                <td>0.524</td>
-                <td>0.671</td>
-                <td>134.12</td>
-              </tr>
-              <tr>
-                <td class="model-name">LLaMA + SNAC (fine-tuned)</td>
-                <td>10.98</td>
-                <td>0.762</td>
-                <td>0.347</td>
-                <td>0.511</td>
-                <td class="best">126.89</td>
-              </tr>
-              <tr>
-                <td class="model-name">Ecogen (noise aug.)</td>
-                <td>11.57</td>
-                <td>0.803</td>
-                <td>0.420</td>
-                <td>0.642</td>
-                <td>120.21</td>
-              </tr>
-              <tr>
-                <td class="model-name">Ecogen (interpolation)</td>
-                <td>7.91</td>
-                <td>0.549</td>
-                <td>0.369</td>
-                <td>0.582</td>
-                <td>121.61</td>
-              </tr>
-              <tr>
-                <td class="model-name">RF fine-tune</td>
-                <td>17.10</td>
-                <td>1.186</td>
-                <td>0.425</td>
-                <td>0.547</td>
-                <td>230.68</td>
-              </tr>
-              <tr class="gt-row">
-                <td class="model-name">Ground Truth</td>
-                <td>14.41</td>
-                <td>&mdash;</td>
-                <td>0.874</td>
-                <td>0.993</td>
-                <td>&mdash;</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- Pretrain results -->
-      <div id="results-pretrain" style="display: none;">
-        <p class="has-text-centered mb-4">
-          ~358 classes, 10 samples/class (3,580 total). ConvNeXt embedder with 3s chunking.
-        </p>
-        <div class="table-responsive">
-          <table class="results-table">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>IS &uarr;</th>
-                <th>IS Ratio &uarr;</th>
-                <th>Top-1 Acc &uarr;</th>
-                <th>Top-5 Acc &uarr;</th>
-                <th>FAD &darr;</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="model-name">AudioGen (pretrained)</td>
-                <td>30.27</td>
-                <td>0.592</td>
-                <td>0.113</td>
-                <td>0.204</td>
-                <td>102.56</td>
-              </tr>
-              <tr>
-                <td class="model-name">LLaMA + SNAC (pretrained)</td>
-                <td>10.69</td>
-                <td>0.209</td>
-                <td>0.027</td>
-                <td>0.054</td>
-                <td class="best">95.02</td>
-              </tr>
-              <tr>
-                <td class="model-name">Ecogen (noise aug.)</td>
-                <td class="best">43.93</td>
-                <td class="best">0.860</td>
-                <td class="best">0.158</td>
-                <td class="best">0.280</td>
-                <td>114.38</td>
-              </tr>
-              <tr>
-                <td class="model-name">Ecogen (interpolation)</td>
-                <td>24.55</td>
-                <td>0.480</td>
-                <td>0.125</td>
-                <td>0.242</td>
-                <td>101.25</td>
-              </tr>
-              <tr>
-                <td class="model-name">AudioGen (text-prompted)</td>
-                <td>10.67</td>
-                <td>0.209</td>
-                <td>0.0002</td>
-                <td>0.001</td>
-                <td>160.68</td>
-              </tr>
-              <tr class="gt-row">
-                <td class="model-name">Ground Truth</td>
-                <td>51.11</td>
-                <td>&mdash;</td>
-                <td>0.711</td>
-                <td>0.853</td>
-                <td>&mdash;</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Reranking Ablation -->
-  <section class="section">
-    <div class="container is-max-desktop">
-      <h2 class="title is-3 has-text-centered">Reranking Ablation</h2>
-      <p class="has-text-centered mb-4">
-        Impact of BirdNET-based reranking on generation quality (fine-tune set, ConvNeXt embedder).
-      </p>
       <div class="table-responsive">
-        <table class="results-table">
+        <table class="audio-table">
           <thead>
             <tr>
-              <th>Model</th>
-              <th>Reranked</th>
-              <th>IS &uarr;</th>
-              <th>Top-1 Acc &uarr;</th>
-              <th>Top-5 Acc &uarr;</th>
-              <th>FAD &darr;</th>
+              <th></th>
+              <th>GT</th>
+              <th>AudioGen</th>
+              <th>LLaMA</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td class="model-name">AudioGen</td>
-              <td>Yes</td>
-              <td class="best">12.65</td>
-              <td class="best">0.675</td>
-              <td class="best">0.795</td>
-              <td class="best">129.90</td>
+              <td>Barred Forest-Falcon</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/baffal1.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/baffal1_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/baffal1_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
             </tr>
             <tr>
-              <td class="model-name">AudioGen</td>
-              <td>No</td>
-              <td>11.91</td>
-              <td>0.524</td>
-              <td>0.671</td>
-              <td>134.12</td>
+              <td>Boat-billed Flycatcher</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/bobfly1.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/bobfly1_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/bobfly1_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
             </tr>
             <tr>
-              <td class="model-name">LLaMA + SNAC</td>
-              <td>Yes</td>
-              <td class="best">10.98</td>
-              <td class="best">0.347</td>
-              <td class="best">0.511</td>
-              <td class="best">126.89</td>
+              <td>Collared Forest-Falcon</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/coffal1.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/coffal1_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/coffal1_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
             </tr>
             <tr>
-              <td class="model-name">LLaMA + SNAC</td>
-              <td>No</td>
-              <td>9.38</td>
-              <td>0.098</td>
-              <td>0.185</td>
-              <td>129.14</td>
+              <td>Common Potoo</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/compot1.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/compot1_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/compot1_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
+            </tr>
+            <tr>
+              <td>Great Antshrike</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/greant1.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/greant1_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/greant1_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
+            </tr>
+            <tr>
+              <td>Piratic Flycatcher</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/pirfly1.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/pirfly1_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/pirfly1_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
+            </tr>
+            <tr>
+              <td>Roadside Hawk</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/roahaw.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/roahaw_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/roahaw_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
+            </tr>
+            <tr>
+              <td>Social Flycatcher</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/socfly1.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/socfly1_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/socfly1_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
+            </tr>
+            <tr>
+              <td>Tropical Kingbird</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/trokin.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/trokin_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/trokin_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
+            </tr>
+            <tr>
+              <td>Tropical Screech-Owl</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/trsowl.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/trsowl_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/trsowl_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
+            </tr>
+            <tr>
+              <td>White-tipped Dove</td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/gt/whtdov.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_audiogen_reranked_wavs/whtdov_stage3_t1.0_000.wav" type="audio/wav"></audio></td>
+              <td><audio controls preload="none"><source src="static/demo_wavs/demo_llama_reranked_wavs/whtdov_step1812_t1.0_000.wav" type="audio/wav"></audio></td>
             </tr>
           </tbody>
         </table>
-      </div>
-    </div>
-  </section>
-
-  <!-- Pipeline -->
-  <section class="section" style="background: #fafafa;">
-    <div class="container is-max-desktop">
-      <h2 class="title is-3 has-text-centered">Pipeline</h2>
-
-      <div class="content">
-        <div class="pipeline-step">
-          <div class="step-number">1</div>
-          <div class="step-content">
-            <h4>Data Preparation</h4>
-            <p>Download BirdSet XCM dataset, filter classes with &ge;50 samples, chunk recordings into 10s segments,
-              split into train/val/test. Optionally enrich with BirdCLEF data using ConvNeXt quality gating.</p>
-          </div>
-        </div>
-        <div class="pipeline-step">
-          <div class="step-number">2</div>
-          <div class="step-content">
-            <h4>Tokenization</h4>
-            <p>Encode audio into discrete tokens &mdash; SNAC (32 kHz, 4-level, 4096 entries) for the LLaMA backbone,
-              or EnCodec (16 kHz) for AudioGen. Tokens are stored as compressed NumPy arrays.</p>
-          </div>
-        </div>
-        <div class="pipeline-step">
-          <div class="step-number">3</div>
-          <div class="step-content">
-            <h4>Training</h4>
-            <p>Train LLaMA from scratch with class-conditioned next-token prediction. Fine-tune AudioGen via three-stage
-              schedule (conditioner &rarr; LoRA &rarr; refined LoRA). Train Ecogen VQ-VAE on mel spectrograms.</p>
-          </div>
-        </div>
-        <div class="pipeline-step">
-          <div class="step-number">4</div>
-          <div class="step-content">
-            <h4>Generation &amp; Reranking</h4>
-            <p>Generate k candidate audio samples per species, score with BirdNET or ConvNeXt classifier, and select the
-              best candidate. Supports temperature and top-k sampling.</p>
-          </div>
-        </div>
-        <div class="pipeline-step">
-          <div class="step-number">5</div>
-          <div class="step-content">
-            <h4>Evaluation</h4>
-            <p>Compute IS, FAD, and classification accuracy using BirdNET, ConvNeXt, and EnCodec embedders. Subjective
-              MOS listening tests delivered via Telegram.</p>
-          </div>
-        </div>
       </div>
     </div>
   </section>
@@ -526,29 +263,6 @@
       </div>
     </div>
   </footer>
-
-  <script>
-    function updateAudioSamples() {
-      var select = document.getElementById('species-select');
-      var species = select.value;
-
-      var mapping = { gt: 'reference', audiogen: 'audiogen', llama: 'llama', rf: 'rf' };
-
-      Object.keys(mapping).forEach(function (key) {
-        var srcEl = document.getElementById('src-' + key);
-        var audioEl = document.getElementById('audio-' + key);
-        srcEl.src = 'static/audio/' + species + '/' + mapping[key] + '.wav';
-        audioEl.load();
-      });
-    }
-
-    function switchResultsTab(tab) {
-      document.getElementById('results-finetune').style.display = tab === 'finetune' ? 'block' : 'none';
-      document.getElementById('results-pretrain').style.display = tab === 'pretrain' ? 'block' : 'none';
-      document.getElementById('tab-finetune').className = tab === 'finetune' ? 'is-active' : '';
-      document.getElementById('tab-pretrain').className = tab === 'pretrain' ? 'is-active' : '';
-    }
-  </script>
 
 </body>
 

@@ -183,6 +183,20 @@ class LlamaGenerator:
         return waveforms
 
 
+def _build_reranker(gen, discriminator, device):
+    from reranker.reranker import Reranker
+
+    if discriminator == "birdnet":
+        from evaluation.embeddings import BirdNetEmbedder
+
+        embedder = BirdNetEmbedder(device=device)
+    else:
+        from evaluation.embeddings import EvalEmbedder
+
+        embedder = EvalEmbedder(device=device)
+    return Reranker(gen, embedder, device=device)
+
+
 def main():
     import argparse
 
@@ -194,21 +208,52 @@ def main():
     parser.add_argument("--num-samples", type=int, default=1)
     parser.add_argument("--list-classes", action="store_true")
     parser.add_argument("--no-bf16", action="store_true")
+    parser.add_argument("--rerank", action="store_true", help="Enable reranking")
+    parser.add_argument(
+        "--k", type=int, default=8, help="Candidates per sample for reranking"
+    )
+    parser.add_argument(
+        "--discriminator",
+        type=str,
+        default="birdnet",
+        choices=["birdnet", "convnext"],
+        help="Classifier for reranking",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    logger.info("loading LLaMA generator from %s", args.checkpoint)
     gen = LlamaGenerator(args.checkpoint, use_bf16=not args.no_bf16)
+    logger.info(
+        "loaded: epoch=%s, step=%s, %d classes, bf16=%s",
+        gen.epoch,
+        gen.step,
+        gen.n_classes,
+        gen.use_bf16,
+    )
 
     if args.list_classes:
         for cid in sorted(gen.id_to_ebird.keys()):
             print(f"  {cid:4d}: {gen.id_to_ebird[cid]}")
         return
 
+    reranker = None
+    if args.rerank:
+        logger.info("loading %s reranker (k=%d)", args.discriminator, args.k)
+        reranker = _build_reranker(gen, args.discriminator, device=str(gen.device))
+        logger.info("reranker ready")
+
     if args.class_name:
         if args.class_name not in gen.ebird_to_id:
-            print(f"Unknown class: {args.class_name}")
+            logger.error("unknown class: %s", args.class_name)
             return
         class_id = gen.ebird_to_id[args.class_name]
     elif args.class_id is not None:
@@ -222,9 +267,22 @@ def main():
         )
         class_name = gen.id_to_ebird.get(sample_class, f"class_{sample_class}")
 
-        audio = gen.generate(sample_class)
+        logger.info(
+            "generating sample %d/%d for %s (class_id=%d)%s",
+            i + 1,
+            args.num_samples,
+            class_name,
+            sample_class,
+            f" [rerank k={args.k}]" if reranker else "",
+        )
+
+        if reranker:
+            audio = reranker.generate(sample_class, k=args.k)
+        else:
+            audio = gen.generate(sample_class)
+
         if audio is None:
-            print(f"Too few tokens for {class_name}, skipping")
+            logger.warning("generation failed for %s, skipping", class_name)
             continue
 
         filename = f"{class_name}_step{gen.step}_t{SNAC_GEN_TEMPERATURE}_{i:03d}.wav"
@@ -232,7 +290,7 @@ def main():
         torchaudio.save(
             str(filepath), torch.from_numpy(audio).unsqueeze(0), gen.sample_rate
         )
-        print(f"Saved: {filepath} ({len(audio) / gen.sample_rate:.2f}s)")
+        logger.info("saved %s (%.2fs)", filepath, len(audio) / gen.sample_rate)
 
 
 if __name__ == "__main__":

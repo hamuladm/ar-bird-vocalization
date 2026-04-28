@@ -1,4 +1,6 @@
 import csv
+import logging
+
 import numpy as np
 import torch
 import torchaudio
@@ -19,6 +21,8 @@ from config import (
 )
 from models.audiogen import load_audiogen, make_species_conditions
 from models.lora import apply_lora
+
+logger = logging.getLogger(__name__)
 
 _TAXONOMY_PATH = (
     Path(__file__).parent.parent / "data_relaxed" / "taxonomy" / "ebird_taxonomy.csv"
@@ -296,6 +300,20 @@ class TextAudiogenGenerator:
         return [wav[i, 0].cpu().numpy() for i in range(wav.shape[0])]
 
 
+def _build_reranker(gen, discriminator, device):
+    from reranker.reranker import Reranker
+
+    if discriminator == "birdnet":
+        from evaluation.embeddings import BirdNetEmbedder
+
+        embedder = BirdNetEmbedder(device=device)
+    else:
+        from evaluation.embeddings import EvalEmbedder
+
+        embedder = EvalEmbedder(device=device)
+    return Reranker(gen, embedder, device=device)
+
+
 def main():
     import argparse
 
@@ -309,16 +327,41 @@ def main():
     parser.add_argument("--lora-rank", type=int, default=None)
     parser.add_argument("--lora-alpha", type=float, default=None)
     parser.add_argument("--bf16", action="store_true")
+    parser.add_argument("--rerank", action="store_true", help="Enable reranking")
+    parser.add_argument(
+        "--k", type=int, default=8, help="Candidates per sample for reranking"
+    )
+    parser.add_argument(
+        "--discriminator",
+        type=str,
+        default="birdnet",
+        choices=["birdnet", "convnext"],
+        help="Classifier for reranking",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    logger.info("loading AudioGen from %s", args.checkpoint)
     gen = AudiogenGenerator(
         args.checkpoint,
         lora_rank=args.lora_rank,
         lora_alpha=args.lora_alpha,
         use_bf16=args.bf16,
+    )
+    logger.info(
+        "loaded: stage=%s, epoch=%s, %d classes, lora=%s",
+        gen.stage,
+        gen.epoch,
+        gen.n_species,
+        gen.used_lora,
     )
 
     if args.list_classes:
@@ -326,9 +369,15 @@ def main():
             print(f"  {cid:4d}: {gen.id_to_ebird[cid]}")
         return
 
+    reranker = None
+    if args.rerank:
+        logger.info("loading %s reranker (k=%d)", args.discriminator, args.k)
+        reranker = _build_reranker(gen, args.discriminator, device=str(gen.device))
+        logger.info("reranker ready")
+
     if args.class_name:
         if args.class_name not in gen.ebird_to_id:
-            print(f"Unknown class: {args.class_name}")
+            logger.error("unknown class: %s", args.class_name)
             return
         class_id = gen.ebird_to_id[args.class_name]
     elif args.class_id is not None:
@@ -342,13 +391,29 @@ def main():
         )
         class_name = gen.id_to_ebird.get(sample_class, f"class_{sample_class}")
 
-        audio = gen.generate(sample_class)
-        wav = torch.from_numpy(audio).unsqueeze(0)
+        logger.info(
+            "generating sample %d/%d for %s (class_id=%d)%s",
+            i + 1,
+            args.num_samples,
+            class_name,
+            sample_class,
+            f" [rerank k={args.k}]" if reranker else "",
+        )
 
+        if reranker:
+            audio = reranker.generate(sample_class, k=args.k)
+        else:
+            audio = gen.generate(sample_class)
+
+        if audio is None:
+            logger.warning("generation failed for %s, skipping", class_name)
+            continue
+
+        wav = torch.from_numpy(audio).unsqueeze(0)
         fname = f"{class_name}_stage{gen.stage}_t{AG_GEN_TEMPERATURE}_{i:03d}.wav"
         filepath = output_dir / fname
         torchaudio.save(str(filepath), wav, gen.sample_rate)
-        print(f"Saved: {filepath} ({audio.shape[0] / gen.sample_rate:.2f}s)")
+        logger.info("saved %s (%.2fs)", filepath, audio.shape[0] / gen.sample_rate)
 
 
 if __name__ == "__main__":
