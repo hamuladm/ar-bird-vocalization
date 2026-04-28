@@ -74,11 +74,6 @@ def _load_ebird_taxonomy():
     return sci_to_code
 
 
-# ---------------------------------------------------------------------------
-# ConvNeXT embedder (original)
-# ---------------------------------------------------------------------------
-
-
 class SpectrogramTransform:
     def __init__(self, device=DEVICE):
         self.device = device
@@ -166,11 +161,6 @@ class EvalEmbedder:
         }
 
 
-# ---------------------------------------------------------------------------
-# BirdNET V3 embedder
-# ---------------------------------------------------------------------------
-
-
 class BirdNetEmbedder:
     sample_rate = _BIRDNET_SR
 
@@ -248,10 +238,6 @@ class BirdNetEmbedder:
         return top1_prob, top1_ebird
 
 
-# ---------------------------------------------------------------------------
-# EnCodec embedder (features only, no classifier)
-# ---------------------------------------------------------------------------
-
 _ENCODEC_SR = 16000
 
 
@@ -305,12 +291,6 @@ def _collate_waveforms(waveforms):
 def _extract_batched(
     waveform_source, embedder, batch_size, desc="embedding", total=None
 ):
-    """Extract embeddings in batches.
-
-    ``waveform_source`` can be a list **or** any iterable of 1-D torch tensors.
-    When an iterable (generator) is passed, waveforms are consumed on-the-fly
-    so only one batch worth of audio is held in memory at a time.
-    """
     all_probs = []
     all_features = []
 
@@ -364,7 +344,6 @@ def extract_embeddings_from_directory(directory, embedder, batch_size=EVAL_BATCH
 
 
 def _iter_segment_waveforms(segments, target_sr):
-    """Yield waveforms one at a time, loading from disk on the fly."""
     for seg in segments:
         seg["filepath"] = seg["filepath"].replace(
             "/workspace/.hf_home/", "/home/dkham/.cache/huggingface/"
@@ -389,11 +368,6 @@ def extract_embeddings_from_arrays(arrays, embedder, batch_size=EVAL_BATCH_SIZE)
 
 
 def _iter_shard_waveforms(shard_paths, target_sr, gt_labels_out):
-    """Yield waveforms from .npz shards one at a time.
-
-    Appends the corresponding ebird_code to ``gt_labels_out`` as a side effect
-    so the caller can recover the label order without a second pass.
-    """
     for path in shard_paths:
         ebird_code = path.stem
         data = np.load(path)

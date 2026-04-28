@@ -6,12 +6,6 @@ import torch.nn.functional as F
 
 
 class LoRALinear(nn.Module):
-    """Drop-in replacement for nn.Linear with frozen base weights + low-rank adapters.
-
-    Keeps ``weight`` and ``bias`` attribute names so that the state-dict keys
-    stay identical to the original nn.Linear, and adds ``lora_A`` / ``lora_B``.
-    """
-
     def __init__(self, original: nn.Linear, rank: int, alpha: float):
         super().__init__()
         self.in_features = original.in_features
@@ -41,7 +35,6 @@ class LoRALinear(nn.Module):
         return base + lora
 
     def merge_and_unload(self) -> nn.Linear:
-        """Fold LoRA weights into the base Linear for zero-overhead inference."""
         merged = nn.Linear(
             self.in_features,
             self.out_features,
@@ -66,10 +59,6 @@ def apply_lora(
     alpha: float = 32.0,
     target_suffixes: tuple[str, ...] = TARGET_SUFFIXES,
 ) -> int:
-    """Replace targeted ``nn.Linear`` modules inside *model* with ``LoRALinear``.
-
-    Returns the number of modules replaced.
-    """
     parents: dict[str, nn.Module] = {name: mod for name, mod in model.named_modules()}
     replaced = 0
     for full_name, module in list(model.named_modules()):
@@ -89,7 +78,6 @@ def apply_lora(
 
 
 def freeze_for_lora(lm: nn.Module) -> None:
-    """Freeze everything except LoRA adapters and the condition_provider."""
     for p in lm.parameters():
         p.requires_grad = False
     for name, p in lm.named_parameters():
@@ -98,11 +86,6 @@ def freeze_for_lora(lm: nn.Module) -> None:
 
 
 def merge_lora(model: nn.Module) -> int:
-    """Fold all ``LoRALinear`` modules back into plain ``nn.Linear``.
-
-    Useful before saving a merged checkpoint for deployment.
-    Returns the number of modules merged.
-    """
     parents: dict[str, nn.Module] = {name: mod for name, mod in model.named_modules()}
     merged = 0
     for full_name, module in list(model.named_modules()):
@@ -120,7 +103,6 @@ def merge_lora(model: nn.Module) -> int:
 
 
 def lora_summary(model: nn.Module) -> dict[str, int]:
-    """Return a dict with total / trainable / lora param counts."""
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     lora_params = sum(p.numel() for n, p in model.named_parameters() if "lora_" in n)

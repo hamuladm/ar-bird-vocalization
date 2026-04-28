@@ -102,7 +102,6 @@ class LlamaGenerator:
 
     @classmethod
     def from_model(cls, model, snac_model, ebird_to_id, device=DEVICE):
-        """Wrap an existing (possibly training) model. No bf16 cast."""
         obj = cls.__new__(cls)
         obj.device = torch.device(device)
         obj.sample_rate = SAMPLE_RATE

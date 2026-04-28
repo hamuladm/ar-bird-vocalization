@@ -1,26 +1,3 @@
-"""Post all MOS trials to a Telegram channel with native anonymous polls.
-
-For each of 11 species, posts:
-    1. Species header + reference audio (~35 s)
-    2. Four samples, each followed by a 1-5 MOS poll
-
-After all trials are posted, a mapping from poll_id -> trial_id is saved
-to  subjective_eval/poll_mapping.json  so results can be collected later.
-
-Usage:
-    1. Create a bot via @BotFather, get the token.
-    2. Add the bot as admin to your channel.
-    3. Run:
-
-        export TELEGRAM_BOT_TOKEN="..."
-        export TELEGRAM_CHANNEL_ID="@your_channel"
-        uv run python subjective_eval/telegram_survey.py
-
-    Use --delay to control pause between posts (default 2 s).
-    Use --dry-run to verify files without posting.
-    Use --collect to stop polls and download results.
-"""
-
 import argparse
 import asyncio
 import csv
@@ -64,10 +41,6 @@ POLL_OPTIONS = [
 POLL_VALUE_MAP = {i: v for i, v in enumerate(range(1, 6))}
 
 
-# ---------------------------------------------------------------------------
-# Trial loading
-# ---------------------------------------------------------------------------
-
 
 def load_trials(csv_path):
     trials = []
@@ -79,7 +52,6 @@ def load_trials(csv_path):
 
 
 def group_by_species(trials):
-    """Group trials into species blocks preserving order."""
     blocks = []
     current_code = None
     current_block = None
@@ -96,10 +68,6 @@ def group_by_species(trials):
         current_block["trials"].append(t)
     return blocks
 
-
-# ---------------------------------------------------------------------------
-# Post to channel
-# ---------------------------------------------------------------------------
 
 
 async def post_instructions(bot: Bot, channel_id: str):
@@ -266,10 +234,6 @@ async def post_all(
     logger.info("All %d trials posted. Poll mapping: %s", total_trials, mapping_path)
 
 
-# ---------------------------------------------------------------------------
-# Collect poll results
-# ---------------------------------------------------------------------------
-
 
 async def collect_results(token: str, channel_id: str):
     mapping_path = SCRIPT_DIR / "poll_mapping.json"
@@ -339,54 +303,24 @@ async def collect_results(token: str, channel_id: str):
     logger.info("Saved analyze-compatible file to %s", simple_path)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Post MOS listening test to a Telegram channel"
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--token", type=str, default=os.environ.get("TELEGRAM_BOT_TOKEN")
     )
     parser.add_argument(
-        "--token",
-        type=str,
-        default=os.environ.get("TELEGRAM_BOT_TOKEN"),
-        help="Bot token (or TELEGRAM_BOT_TOKEN env var)",
-    )
-    parser.add_argument(
-        "--channel",
-        type=str,
-        default=os.environ.get("TELEGRAM_CHANNEL_ID"),
-        help="Channel ID (or TELEGRAM_CHANNEL_ID env var)",
+        "--channel", type=str, default=os.environ.get("TELEGRAM_CHANNEL_ID")
     )
     parser.add_argument(
         "--csv",
         type=Path,
         default=SCRIPT_DIR / "survey_order.csv",
     )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=2.0,
-        help="Seconds between posts (avoid rate limits)",
-    )
-    parser.add_argument(
-        "--resume-from",
-        type=int,
-        default=1,
-        help="Resume from trial N (1-based, skips earlier species blocks)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Verify audio files without posting",
-    )
-    parser.add_argument(
-        "--collect",
-        action="store_true",
-        help="Stop polls and collect results",
-    )
+    parser.add_argument("--delay", type=float, default=2.0)
+    parser.add_argument("--resume-from", type=int, default=1)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--collect", action="store_true")
     args = parser.parse_args()
 
     if not args.token:

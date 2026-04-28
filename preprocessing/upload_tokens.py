@@ -57,27 +57,12 @@ def upload_tokens(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Upload token files to S3")
-    parser.add_argument(
-        "--codec",
-        choices=list(CODEC_DIRS),
-        required=True,
-        help="Which codec's tokens to upload",
-    )
-    parser.add_argument(
-        "--split",
-        choices=SPLITS,
-        nargs="+",
-        default=None,
-        help="Splits to upload (default: all)",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--codec", choices=list(CODEC_DIRS), required=True)
+    parser.add_argument("--split", choices=SPLITS, nargs="+", default=None)
     parser.add_argument("--bucket", default=S3_BUCKET)
     parser.add_argument("--prefix", default=S3_PREFIX)
-    parser.add_argument(
-        "--token-dir",
-        default=None,
-        help="Override the local token directory",
-    )
+    parser.add_argument("--token-dir", default=None)
     args = parser.parse_args()
 
     upload_tokens(

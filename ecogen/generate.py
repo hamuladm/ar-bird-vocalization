@@ -15,13 +15,9 @@ import tqdm
 import numpy as np
 import soundfile as sf
 
-parser = argparse.ArgumentParser(description="Data Augmentator")
-parser.add_argument(
-    "--data_paths", type=str, default="", help="Audio paths list. (*.png, *.npy, *.wav)"
-)
-parser.add_argument(
-    "--out_folder", type=str, help="Output folder for generated samples."
-)
+parser = argparse.ArgumentParser()
+parser.add_argument("--data_paths", type=str, default="")
+parser.add_argument("--out_folder", type=str)
 parser.add_argument("--augmentations", default="noise")
 parser.add_argument("--num_samples", type=int, default=1)
 parser.add_argument("--device", default="cpu")

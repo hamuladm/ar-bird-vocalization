@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 _ECOGEN_SR = 16384
 _ECOGEN_N_FFT = 1024
-_ECOGEN_HOP_LEN = 512  # must match librosa default used during VQ-VAE training
+_ECOGEN_HOP_LEN = 512
 _ECOGEN_CHUNK_SEC = 4
 _ECOGEN_CHUNK_LEN = _ECOGEN_SR * _ECOGEN_CHUNK_SEC
 _ECOGEN_TARGET_SEC = 10
@@ -23,7 +23,6 @@ _ECOGEN_TARGET_LEN = _ECOGEN_SR * _ECOGEN_TARGET_SEC
 
 
 def _load_vqvae(model_path, device):
-    """Load a VQ-VAE checkpoint (mirrors ecogen.generate.load_model)."""
     model = VQVAE(in_channel=1)
     weights = torch.load(model_path, map_location="cpu", weights_only=False)
     if "model" in weights:
@@ -38,13 +37,6 @@ def _load_vqvae(model_path, device):
 
 
 class EcogenGenerator:
-    """VQ-VAE-2 latent-space augmentation generator.
-
-    Wraps the ecogen VQ-VAE model to conform to the generator interface
-    expected by ``evaluation/generate_samples.py``.  Source audio comes from
-    segment dicts (filepath + start/end) grouped by ebird_code.
-    """
-
     sample_rate = _ECOGEN_SR
 
     def __init__(
@@ -94,13 +86,8 @@ class EcogenGenerator:
         for code, segs in self._class_segments.items():
             logger.info("ecogen source: %s — %d segments", code, len(segs))
 
-    # ------------------------------------------------------------------
-    # Audio / spectrogram helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _chunk_audio(audio_np):
-        """Split waveform into non-overlapping 4s chunks, padding the last."""
         n_chunks = max(1, math.ceil(len(audio_np) / _ECOGEN_CHUNK_LEN))
         chunks = []
         for i in range(n_chunks):
@@ -111,7 +98,6 @@ class EcogenGenerator:
         return chunks
 
     def _audio_to_spectrogram(self, audio_np):
-        """1-D float array (exactly 4s) -> (1, 1, F, T) torch tensor."""
         audio_np = librosa.util.fix_length(data=audio_np, size=_ECOGEN_CHUNK_LEN)
         mel = librosa.feature.melspectrogram(
             y=audio_np,
@@ -126,7 +112,6 @@ class EcogenGenerator:
         return torch.from_numpy(mel_db[np.newaxis, np.newaxis]).float()
 
     def _spectrogram_to_audio(self, spec_db_np):
-        """2-D dB mel spectrogram -> 1-D float32 waveform."""
         power = librosa.db_to_power(spec_db_np)
         return librosa.feature.inverse.mel_to_audio(
             power,
@@ -136,7 +121,6 @@ class EcogenGenerator:
         ).astype(np.float32)
 
     def _load_audio(self, segment):
-        """Load a segment's raw waveform at ecogen sample rate."""
         segment["filepath"] = segment["filepath"].replace(
             "/workspace/.hf_home/", "/home/dkham/.cache/huggingface/"
         )
@@ -146,10 +130,6 @@ class EcogenGenerator:
             segment["end"],
             target_sr=_ECOGEN_SR,
         )
-
-    # ------------------------------------------------------------------
-    # Encode / decode through VQ-VAE
-    # ------------------------------------------------------------------
 
     @torch.no_grad()
     def _encode(self, spec_tensor):
@@ -164,17 +144,11 @@ class EcogenGenerator:
 
     @staticmethod
     def _fit_to_target(audio_np):
-        """Truncate or pad to exactly _ECOGEN_TARGET_LEN samples (10s)."""
         if len(audio_np) >= _ECOGEN_TARGET_LEN:
             return audio_np[:_ECOGEN_TARGET_LEN]
         return librosa.util.fix_length(data=audio_np, size=_ECOGEN_TARGET_LEN)
 
-    # ------------------------------------------------------------------
-    # Per-chunk augmentation helpers
-    # ------------------------------------------------------------------
-
     def _augment_chunk_noise(self, chunk_np, ratio):
-        """Encode a 4s chunk, perturb latents, decode back."""
         spec = self._audio_to_spectrogram(chunk_np)
         q_t, q_b = self._encode(spec)
         q_t = ratio * torch.randn_like(q_t) + q_t
@@ -182,7 +156,6 @@ class EcogenGenerator:
         return self._spectrogram_to_audio(self._decode(q_t, q_b))
 
     def _augment_chunk_interp(self, chunk_a_np, chunk_b_np, alpha, ratio):
-        """Interpolate latents of two 4s chunks and decode."""
         spec_a = self._audio_to_spectrogram(chunk_a_np)
         spec_b = self._audio_to_spectrogram(chunk_b_np)
         q_t_a, q_b_a = self._encode(spec_a)
@@ -195,7 +168,6 @@ class EcogenGenerator:
         return self._spectrogram_to_audio(self._decode(q_t, q_b))
 
     def _generate_latent_chunk(self, stats, ratio):
-        """Sample one 4s chunk from class latent statistics."""
         q_t = (
             torch.randn_like(stats["q_t_mean"]) * stats["q_t_std"] * ratio
             + stats["q_t_mean"]
@@ -207,10 +179,6 @@ class EcogenGenerator:
         return self._spectrogram_to_audio(
             self._decode(q_t.unsqueeze(0), q_b.unsqueeze(0))
         )
-
-    # ------------------------------------------------------------------
-    # Public generator interface
-    # ------------------------------------------------------------------
 
     def generate(self, class_id, ratio=None, augmentation=None, **_kwargs):
         augmentation = augmentation or self.augmentation

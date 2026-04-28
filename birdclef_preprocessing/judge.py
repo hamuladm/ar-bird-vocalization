@@ -73,8 +73,6 @@ class BirdClassifier:
         self._chunk_len = int(EVAL_CHUNK_SEC * EVAL_SAMPLE_RATE)
 
     def _chunk_waveform(self, waveform: torch.Tensor) -> torch.Tensor:
-        """Split a 1-D waveform into non-overlapping chunks of ``_chunk_len``
-        samples, zero-padding the last chunk if necessary."""
         n = waveform.shape[-1]
         if n <= self._chunk_len:
             return waveform.unsqueeze(0)

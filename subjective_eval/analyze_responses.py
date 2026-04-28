@@ -1,14 +1,3 @@
-"""Analyze MOS subjective listening-test responses.
-
-Reads:
-    survey_order.csv      — trial_id -> system / class mapping
-    mos_responses.json    — one or more response files, each a list of
-                            {trial_id, mos} dicts
-
-Reports per-system MOS mean with 95% confidence intervals,
-plus a per-class breakdown.
-"""
-
 import argparse
 import csv
 import json
@@ -90,15 +79,12 @@ def analyze(order, all_responses):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Analyze MOS listening-test responses",
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "response_files",
         nargs="*",
         type=Path,
         default=[SCRIPT_DIR / "mos_responses.json"],
-        help="One or more response JSON files",
     )
     parser.add_argument("--order", type=Path, default=SCRIPT_DIR / "survey_order.csv")
     args = parser.parse_args()

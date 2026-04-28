@@ -1,13 +1,3 @@
-"""Build an HTML MOS listening-test survey from prepared samples.
-
-Reads the directory structure produced by ``prepare_listening_test.py``
-(``mos_samples/``) and the companion ``manifest.json``.
-
-Produces:
-    survey_order.csv    — maps trial_id -> system / class / sample path
-    listening_test.html — self-contained HTML page with linked audio
-"""
-
 import argparse
 import csv
 import json
@@ -319,9 +309,7 @@ form.addEventListener('submit', (e) => {{
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Build MOS listening-test HTML from prepared samples"
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument("--samples-dir", type=Path, default=SAMPLES_DIR)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
