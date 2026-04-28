@@ -4,7 +4,7 @@ Autoregressive generation of bird vocalizations using class-conditioned language
 
 > **Thesis:** [TODO: Add link to the thesis PDF]
 >
-> **Demo:** [TODO: Add link to the demo page]
+> **Demo:** [https://hamuladm.github.io/ar-bird-vocalization/](https://hamuladm.github.io/ar-bird-vocalization/)
 >
 > **Pretrained weights:** [TODO: Add link to model checkpoints]
 
