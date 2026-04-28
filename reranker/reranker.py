@@ -61,8 +61,13 @@ class Reranker:
             logger.info(
                 "candidate %d/%d  target=%s  predicted=%s  "
                 "top1_prob=%.4f  target_prob=%.4f  correct=%s",
-                i + 1, len(waveforms), ebird_code, pred_ebird,
-                top1_prob[i].item(), target_probs[i].item(), correct,
+                i + 1,
+                len(waveforms),
+                ebird_code,
+                pred_ebird,
+                top1_prob[i].item(),
+                target_probs[i].item(),
+                correct,
             )
         return target_probs
 

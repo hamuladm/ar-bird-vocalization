@@ -20,7 +20,9 @@ from config import (
 from models.audiogen import load_audiogen, make_species_conditions
 from models.lora import apply_lora
 
-_TAXONOMY_PATH = Path(__file__).parent.parent / "data_relaxed" / "taxonomy" / "ebird_taxonomy.csv"
+_TAXONOMY_PATH = (
+    Path(__file__).parent.parent / "data_relaxed" / "taxonomy" / "ebird_taxonomy.csv"
+)
 
 
 def _lora_rank_from_state_dict(sd):
@@ -40,8 +42,14 @@ def _lora_alpha_for_checkpoint(ckpt):
 
 
 class AudiogenGenerator:
-    def __init__(self, checkpoint_path, device=DEVICE, lora_rank=None,
-                 lora_alpha=None, use_bf16=False):
+    def __init__(
+        self,
+        checkpoint_path,
+        device=DEVICE,
+        lora_rank=None,
+        lora_alpha=None,
+        use_bf16=False,
+    ):
         self.device = torch.device(device)
 
         ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
@@ -104,9 +112,14 @@ class AudiogenGenerator:
         return obj
 
     @torch.no_grad()
-    def generate(self, species_id, duration=AG_GEN_DURATION,
-                 temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
-                 cfg_coef=AG_GEN_CFG_COEF):
+    def generate(
+        self,
+        species_id,
+        duration=AG_GEN_DURATION,
+        temperature=AG_GEN_TEMPERATURE,
+        top_k=AG_GEN_TOP_K,
+        cfg_coef=AG_GEN_CFG_COEF,
+    ):
         self.audiogen.set_generation_params(
             duration=duration,
             temperature=temperature,
@@ -135,9 +148,15 @@ class AudiogenGenerator:
         return audio[0, 0].cpu().numpy()
 
     @torch.no_grad()
-    def generate_batch(self, species_id, k, duration=AG_GEN_DURATION,
-                       temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
-                       cfg_coef=AG_GEN_CFG_COEF):
+    def generate_batch(
+        self,
+        species_id,
+        k,
+        duration=AG_GEN_DURATION,
+        temperature=AG_GEN_TEMPERATURE,
+        top_k=AG_GEN_TOP_K,
+        cfg_coef=AG_GEN_CFG_COEF,
+    ):
         self.audiogen.set_generation_params(
             duration=duration,
             temperature=temperature,
@@ -195,8 +214,14 @@ class TextAudiogenGenerator:
         "descriptive": "Bird song in nature. {common_name} ({sci_name}).",
     }
 
-    def __init__(self, ebird_codes, device=DEVICE, use_bf16=False,
-                 prompt_template="descriptive", taxonomy_path=_TAXONOMY_PATH):
+    def __init__(
+        self,
+        ebird_codes,
+        device=DEVICE,
+        use_bf16=False,
+        prompt_template="descriptive",
+        taxonomy_path=_TAXONOMY_PATH,
+    ):
         self.device = torch.device(device)
         self.audiogen = AudioGen.get_pretrained(AG_PRETRAINED, device=str(self.device))
         self.sample_rate = self.audiogen.sample_rate
@@ -216,7 +241,9 @@ class TextAudiogenGenerator:
             sci = code_to_sci.get(code, code)
             common = code_to_common.get(code, code)
             self._prompts[code] = self._template.format(
-                sci_name=sci, common_name=common, ebird_code=code,
+                sci_name=sci,
+                common_name=common,
+                ebird_code=code,
             )
 
         if use_bf16:
@@ -224,7 +251,9 @@ class TextAudiogenGenerator:
                 raise ValueError("use_bf16=True requires CUDA.")
             self.audiogen.lm.to(torch.bfloat16)
             self.audiogen.autocast = TorchAutocast(
-                enabled=True, device_type="cuda", dtype=torch.bfloat16,
+                enabled=True,
+                device_type="cuda",
+                dtype=torch.bfloat16,
             )
 
     def _prompt_for(self, species_id):
@@ -232,24 +261,41 @@ class TextAudiogenGenerator:
         return self._prompts[code]
 
     @torch.no_grad()
-    def generate(self, species_id, duration=AG_GEN_DURATION,
-                 temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
-                 cfg_coef=AG_GEN_CFG_COEF):
+    def generate(
+        self,
+        species_id,
+        duration=AG_GEN_DURATION,
+        temperature=AG_GEN_TEMPERATURE,
+        top_k=AG_GEN_TOP_K,
+        cfg_coef=AG_GEN_CFG_COEF,
+    ):
         self.audiogen.set_generation_params(
-            duration=duration, temperature=temperature,
-            top_k=top_k, cfg_coef=cfg_coef, use_sampling=True,
+            duration=duration,
+            temperature=temperature,
+            top_k=top_k,
+            cfg_coef=cfg_coef,
+            use_sampling=True,
         )
         prompt = self._prompt_for(species_id)
         wav = self.audiogen.generate([prompt])
         return wav[0, 0].cpu().numpy()
 
     @torch.no_grad()
-    def generate_batch(self, species_id, k, duration=AG_GEN_DURATION,
-                       temperature=AG_GEN_TEMPERATURE, top_k=AG_GEN_TOP_K,
-                       cfg_coef=AG_GEN_CFG_COEF):
+    def generate_batch(
+        self,
+        species_id,
+        k,
+        duration=AG_GEN_DURATION,
+        temperature=AG_GEN_TEMPERATURE,
+        top_k=AG_GEN_TOP_K,
+        cfg_coef=AG_GEN_CFG_COEF,
+    ):
         self.audiogen.set_generation_params(
-            duration=duration, temperature=temperature,
-            top_k=top_k, cfg_coef=cfg_coef, use_sampling=True,
+            duration=duration,
+            temperature=temperature,
+            top_k=top_k,
+            cfg_coef=cfg_coef,
+            use_sampling=True,
         )
         prompt = self._prompt_for(species_id)
         wav = self.audiogen.generate([prompt] * k)

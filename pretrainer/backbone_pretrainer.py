@@ -32,7 +32,13 @@ from utils.checkpoint import save_checkpoint, load_checkpoint
 
 
 class BackbonePretrainer:
-    def __init__(self, resume=None, use_wandb=False, sample_class_ids=None, num_sample_classes=3,dry_run=False
+    def __init__(
+        self,
+        resume=None,
+        use_wandb=False,
+        sample_class_ids=None,
+        num_sample_classes=3,
+        dry_run=False,
     ):
         self.device = torch.device(DEVICE)
         self.save_dir = Path(PRETRAIN_SAVE_DIR)
@@ -194,7 +200,9 @@ class BackbonePretrainer:
                 from generator.llama_generator import LlamaGenerator
 
                 gen = LlamaGenerator.from_model(
-                    self.model, self.snac_model, self.ebird_to_id,
+                    self.model,
+                    self.snac_model,
+                    self.ebird_to_id,
                     device=str(self.device),
                 )
                 log_dict = {
@@ -207,7 +215,8 @@ class BackbonePretrainer:
                     audio = gen.generate(cid)
                     if audio is not None:
                         log_dict[f"audio/{name}"] = wandb.Audio(
-                            audio, sample_rate=gen.sample_rate,
+                            audio,
+                            sample_rate=gen.sample_rate,
                             caption=f"{name}_epoch{epoch}",
                         )
                 wandb.log(log_dict)
@@ -220,7 +229,6 @@ class BackbonePretrainer:
                 self._save(
                     self.save_dir / f"checkpoint_epoch_{epoch}.pt", epoch, val_loss
                 )
-
 
         if self.use_wandb:
             wandb.finish()

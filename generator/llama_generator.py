@@ -120,14 +120,22 @@ class LlamaGenerator:
     def _build_prompt(self, class_id, batch_size=1):
         cls_token = CLASS_TOKEN_OFFSET + class_id
         prompt = torch.full(
-            (batch_size, 2), BOS_TOKEN, device=self.device, dtype=torch.long,
+            (batch_size, 2),
+            BOS_TOKEN,
+            device=self.device,
+            dtype=torch.long,
         )
         prompt[:, 0] = cls_token
         return prompt
 
     @torch.no_grad()
-    def generate(self, class_id, temperature=SNAC_GEN_TEMPERATURE, top_k=SNAC_GEN_TOP_K,
-                 max_length=MAX_SEQ_LEN):
+    def generate(
+        self,
+        class_id,
+        temperature=SNAC_GEN_TEMPERATURE,
+        top_k=SNAC_GEN_TOP_K,
+        max_length=MAX_SEQ_LEN,
+    ):
         prompt = self._build_prompt(class_id, batch_size=1)
         output = self.model.generate(
             prompt,
@@ -145,8 +153,14 @@ class LlamaGenerator:
         return _decode_to_audio(snac_codes, self.snac_model, self.device)
 
     @torch.no_grad()
-    def generate_batch(self, class_id, k, temperature=SNAC_GEN_TEMPERATURE,
-                       top_k=SNAC_GEN_TOP_K, max_length=MAX_SEQ_LEN):
+    def generate_batch(
+        self,
+        class_id,
+        k,
+        temperature=SNAC_GEN_TEMPERATURE,
+        top_k=SNAC_GEN_TOP_K,
+        max_length=MAX_SEQ_LEN,
+    ):
         prompt = self._build_prompt(class_id, batch_size=k)
         outputs = self.model.generate(
             prompt,

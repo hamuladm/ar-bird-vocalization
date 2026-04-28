@@ -133,3 +133,4 @@ evaluation:
   spec_mean: -4.268
   spec_std: 4.569
   spec_size: [128, 334]
+  chunk_sec: 3.0

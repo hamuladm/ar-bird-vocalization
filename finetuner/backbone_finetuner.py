@@ -86,9 +86,7 @@ class GPT2Finetuner:
             self.model.parameters(), lr=lr, weight_decay=0.01
         )
 
-        self.scheduler = get_constant_schedule_with_warmup(
-            self.optimizer, warmup_steps
-        )
+        self.scheduler = get_constant_schedule_with_warmup(self.optimizer, warmup_steps)
 
         self.start_epoch = 1
         self.global_step = 0
@@ -156,10 +154,7 @@ class GPT2Finetuner:
                 self.optimizer.zero_grad(set_to_none=True)
                 self.global_step += 1
 
-        if (
-            step >= 0
-            and (step + 1) % self.grad_accum_steps != 0
-        ):
+        if step >= 0 and (step + 1) % self.grad_accum_steps != 0:
             nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             self.scheduler.step()
@@ -221,7 +216,9 @@ class GPT2Finetuner:
                 from generator import LlamaGenerator
 
                 gen = LlamaGenerator.from_model(
-                    self.model, self.snac_model, self.ebird_to_id,
+                    self.model,
+                    self.snac_model,
+                    self.ebird_to_id,
                     device=str(self.device),
                 )
                 log_dict = {
@@ -234,7 +231,8 @@ class GPT2Finetuner:
                     audio = gen.generate(cid)
                     if audio is not None:
                         log_dict[f"audio/{name}"] = wandb.Audio(
-                            audio, sample_rate=gen.sample_rate,
+                            audio,
+                            sample_rate=gen.sample_rate,
                             caption=f"{name}_epoch{epoch}",
                         )
                 wandb.log(log_dict)

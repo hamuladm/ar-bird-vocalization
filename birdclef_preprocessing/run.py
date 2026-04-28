@@ -37,7 +37,7 @@ from birdclef_preprocessing.metadata import (
 )
 from birdclef_preprocessing.gating import gate_segments
 from birdclef_preprocessing.xcm_enrich import enrich_with_xcm_from_jsons
-from judge import BirdClassifier
+from birdclef_preprocessing.judge import BirdClassifier
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +153,9 @@ def main():
     parser.add_argument(
         "--pretrain-segment-dir",
         type=str,
-        default=str(BC_XCM_PRETRAIN_SEGMENT_DIR) if BC_XCM_PRETRAIN_SEGMENT_DIR else None,
+        default=str(BC_XCM_PRETRAIN_SEGMENT_DIR)
+        if BC_XCM_PRETRAIN_SEGMENT_DIR
+        else None,
         help=(
             "Pretrain segment dir with val_segments.json / test_segments.json. "
             "Recordings in those holdout sets are excluded from XCM enrichment to "
@@ -264,9 +266,7 @@ def main():
         if args.xcm_gate and xcm_segs:
             dev = args.device or DEVICE
             logger.info("XCM 3-stage gating: %s on %s", args.checkpoint, dev)
-            xcm_classifier = BirdClassifier(
-                checkpoint=args.checkpoint, device=dev
-            )
+            xcm_classifier = BirdClassifier(checkpoint=args.checkpoint, device=dev)
             xcm_segs = gate_segments(
                 xcm_segs,
                 xcm_classifier,

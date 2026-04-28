@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 import torchaudio
 from pathlib import Path
+from tqdm import tqdm
 from transformers import ConvNextForImageClassification
 
 from config import (
@@ -22,7 +23,8 @@ from config import (
     EVAL_SPEC_MEAN,
     EVAL_SPEC_STD,
     EVAL_BATCH_SIZE,
-    EVAL_SPEC_SIZE
+    EVAL_SPEC_SIZE,
+    EVAL_CHUNK_SEC,
 )
 from utils.audio import load_segment
 
@@ -31,11 +33,17 @@ logger = logging.getLogger(__name__)
 AUDIO_EXTENSIONS = {".wav", ".flac", ".mp3", ".ogg"}
 
 _BIRDNET_DIR = os.path.join(os.path.dirname(__file__), "..", "checkpoints")
-_BIRDNET_MODEL_PATH = os.path.join(_BIRDNET_DIR, "BirdNET+_V3.0-preview3_Global_11K_FP32.pt")
-_BIRDNET_LABELS_PATH = os.path.join(_BIRDNET_DIR, "BirdNET+_V3.0-preview3_Global_11K_Labels.csv")
+_BIRDNET_MODEL_PATH = os.path.join(
+    _BIRDNET_DIR, "BirdNET+_V3.0-preview3_Global_11K_FP32.pt"
+)
+_BIRDNET_LABELS_PATH = os.path.join(
+    _BIRDNET_DIR, "BirdNET+_V3.0-preview3_Global_11K_Labels.csv"
+)
 _BIRDNET_MODEL_URL = "https://zenodo.org/records/18247420/files/BirdNET+_V3.0-preview3_Global_11K_FP32.pt?download=1"
 _BIRDNET_LABELS_URL = "https://zenodo.org/records/18247420/files/BirdNET+_V3.0-preview3_Global_11K_Labels.csv?download=1"
-_TAXONOMY_PATH = os.path.join(os.path.dirname(__file__), "..", "data_relaxed", "taxonomy", "ebird_taxonomy.csv")
+_TAXONOMY_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "data_relaxed", "taxonomy", "ebird_taxonomy.csv"
+)
 _BIRDNET_SR = 32000
 _BIRDNET_CHUNK_SEC = 3.0
 
@@ -70,6 +78,7 @@ def _load_ebird_taxonomy():
 # ConvNeXT embedder (original)
 # ---------------------------------------------------------------------------
 
+
 class SpectrogramTransform:
     def __init__(self, device=DEVICE):
         self.device = device
@@ -86,7 +95,9 @@ class SpectrogramTransform:
             n_stft=EVAL_N_FFT // 2 + 1,
         ).to(device)
 
-        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(stype="power", top_db=80).to(device)
+        self.amplitude_to_db = torchaudio.transforms.AmplitudeToDB(
+            stype="power", top_db=80
+        ).to(device)
 
     def __call__(self, waveform):
         waveform = waveform.to(self.device)
@@ -122,20 +133,43 @@ class EvalEmbedder:
         self.preprocessor = SpectrogramTransform(device=device)
         id2label = self.model.config.id2label
         self.idx_to_ebird = {int(k): str(v).strip() for k, v in id2label.items()}
+        self._chunk_len = int(EVAL_CHUNK_SEC * EVAL_SAMPLE_RATE)
+
+    def _chunk_waveform(self, waveform):
+        n = waveform.shape[-1]
+        if n <= self._chunk_len:
+            return waveform.unsqueeze(0)
+        chunks = []
+        for start in range(0, n, self._chunk_len):
+            seg = waveform[start : start + self._chunk_len]
+            if seg.shape[-1] < self._chunk_len:
+                seg = F.pad(seg, (0, self._chunk_len - seg.shape[-1]))
+            chunks.append(seg)
+        return torch.stack(chunks)
 
     @torch.inference_mode()
     def extract(self, waveforms):
-        spec = self.preprocessor(waveforms)
-        backbone_out = self.model.convnext(spec)
-        features = backbone_out.pooler_output
-        logits = self.model.classifier(features)
-        probs = F.softmax(logits, dim=-1)
-        return {"probs": probs, "features": features}
+        all_probs = []
+        all_features = []
+        for i in range(waveforms.shape[0]):
+            chunks = self._chunk_waveform(waveforms[i]).to(self.device)
+            spec = self.preprocessor(chunks)
+            backbone_out = self.model.convnext(spec)
+            features = backbone_out.pooler_output
+            logits = self.model.classifier(features)
+            probs = F.softmax(logits, dim=-1)
+            all_probs.append(probs.mean(dim=0))
+            all_features.append(features.mean(dim=0))
+        return {
+            "probs": torch.stack(all_probs),
+            "features": torch.stack(all_features),
+        }
 
 
 # ---------------------------------------------------------------------------
 # BirdNET V3 embedder
 # ---------------------------------------------------------------------------
+
 
 class BirdNetEmbedder:
     sample_rate = _BIRDNET_SR
@@ -159,7 +193,8 @@ class BirdNetEmbedder:
 
         logger.info(
             "BirdNetEmbedder: %d labels, %d mapped to ebird codes",
-            len(self.labels), len(self.ebird_to_idx),
+            len(self.labels),
+            len(self.ebird_to_idx),
         )
 
     def _load_labels(self):
@@ -227,7 +262,9 @@ class EncodecEmbedder:
         from audiocraft.models import AudioGen
 
         self.device = torch.device(device) if isinstance(device, str) else device
-        audiogen = AudioGen.get_pretrained("facebook/audiogen-medium", device=self.device)
+        audiogen = AudioGen.get_pretrained(
+            "facebook/audiogen-medium", device=self.device
+        )
         self.encoder = audiogen.compression_model.encoder
         self.encoder.eval()
         del audiogen
@@ -265,17 +302,45 @@ def _collate_waveforms(waveforms):
     return batch
 
 
-def _extract_batched(waveform_tensors, embedder, batch_size):
+def _extract_batched(
+    waveform_source, embedder, batch_size, desc="embedding", total=None
+):
+    """Extract embeddings in batches.
+
+    ``waveform_source`` can be a list **or** any iterable of 1-D torch tensors.
+    When an iterable (generator) is passed, waveforms are consumed on-the-fly
+    so only one batch worth of audio is held in memory at a time.
+    """
     all_probs = []
     all_features = []
 
-    for start in range(0, len(waveform_tensors), batch_size):
-        batch_wavs = waveform_tensors[start : start + batch_size]
+    if isinstance(waveform_source, (list, tuple)):
+        total = len(waveform_source)
+        source_iter = iter(waveform_source)
+    else:
+        source_iter = iter(waveform_source)
+
+    n_batches = (total + batch_size - 1) // batch_size if total else None
+    pbar = tqdm(desc=desc, total=n_batches, unit="batch")
+    done = False
+    while not done:
+        batch_wavs = []
+        for _ in range(batch_size):
+            try:
+                batch_wavs.append(next(source_iter))
+            except StopIteration:
+                done = True
+                break
+        if not batch_wavs:
+            break
         batch = _collate_waveforms(batch_wavs).to(embedder.device)
         result = embedder.extract(batch)
         if result["probs"] is not None:
             all_probs.append(result["probs"].cpu().numpy())
         all_features.append(result["features"].cpu().numpy())
+        del batch, batch_wavs, result
+        pbar.update(1)
+    pbar.close()
 
     out = {"features": np.concatenate(all_features, axis=0)}
     if all_probs:
@@ -283,23 +348,39 @@ def _extract_batched(waveform_tensors, embedder, batch_size):
     return out
 
 
+def _iter_directory_waveforms(paths, target_sr):
+    for p in paths:
+        yield _load_and_resample(p, target_sr)
+
+
 def extract_embeddings_from_directory(directory, embedder, batch_size=EVAL_BATCH_SIZE):
     target_sr = getattr(embedder, "sample_rate", EVAL_SAMPLE_RATE)
     paths = _collect_audio_paths(directory)
-    waveforms = [_load_and_resample(p, target_sr) for p in paths]
-    return _extract_batched(waveforms, embedder, batch_size)
+    logger.info("loading %d audio files from %s", len(paths), directory)
+    source = _iter_directory_waveforms(paths, target_sr)
+    return _extract_batched(
+        source, embedder, batch_size, desc="dir embeddings", total=len(paths)
+    )
+
+
+def _iter_segment_waveforms(segments, target_sr):
+    """Yield waveforms one at a time, loading from disk on the fly."""
+    for seg in segments:
+        seg["filepath"] = seg["filepath"].replace(
+            "/workspace/.hf_home/", "/home/dkham/.cache/huggingface/"
+        )
+        audio_np = load_segment(seg["filepath"], seg["start"], seg["end"], target_sr)
+        yield torch.from_numpy(audio_np).float()
 
 
 def extract_embeddings_from_segments(segments, embedder, batch_size=EVAL_BATCH_SIZE):
     target_sr = getattr(embedder, "sample_rate", EVAL_SAMPLE_RATE)
-    waveforms = []
-    for seg in segments:
-        seg["filepath"] = seg["filepath"].replace("/home/dkham/.cache/huggingface/", "/workspace/.hf_home/")
-        audio_np = load_segment(
-            seg["filepath"], seg["start"], seg["end"], target_sr
-        )
-        waveforms.append(torch.from_numpy(audio_np).float())
-    return _extract_batched(waveforms, embedder, batch_size)
+    n = len(segments)
+    logger.info("streaming %d reference segments (target_sr=%d)", n, target_sr)
+    source = _iter_segment_waveforms(segments, target_sr)
+    return _extract_batched(
+        source, embedder, batch_size, desc="ref embeddings", total=n
+    )
 
 
 def extract_embeddings_from_arrays(arrays, embedder, batch_size=EVAL_BATCH_SIZE):
@@ -307,11 +388,12 @@ def extract_embeddings_from_arrays(arrays, embedder, batch_size=EVAL_BATCH_SIZE)
     return _extract_batched(waveforms, embedder, batch_size)
 
 
-def extract_embeddings_from_shards(directory, embedder, batch_size=EVAL_BATCH_SIZE):
-    target_sr = getattr(embedder, "sample_rate", EVAL_SAMPLE_RATE)
-    shard_paths = sorted(Path(directory).glob("*.npz"))
-    waveforms = []
-    gt_labels = []
+def _iter_shard_waveforms(shard_paths, target_sr, gt_labels_out):
+    """Yield waveforms from .npz shards one at a time.
+
+    Appends the corresponding ebird_code to ``gt_labels_out`` as a side effect
+    so the caller can recover the label order without a second pass.
+    """
     for path in shard_paths:
         ebird_code = path.stem
         data = np.load(path)
@@ -321,9 +403,28 @@ def extract_embeddings_from_shards(directory, embedder, batch_size=EVAL_BATCH_SI
         for i in range(len(lengths)):
             w = torch.from_numpy(samples[i, : lengths[i]]).float()
             if sr != target_sr:
-                w = torchaudio.functional.resample(w.unsqueeze(0), sr, target_sr).squeeze(0)
-            waveforms.append(w)
-            gt_labels.append(ebird_code)
-    result = _extract_batched(waveforms, embedder, batch_size)
+                w = torchaudio.functional.resample(
+                    w.unsqueeze(0), sr, target_sr
+                ).squeeze(0)
+            gt_labels_out.append(ebird_code)
+            yield w
+
+
+def extract_embeddings_from_shards(directory, embedder, batch_size=EVAL_BATCH_SIZE):
+    target_sr = getattr(embedder, "sample_rate", EVAL_SAMPLE_RATE)
+    shard_paths = sorted(Path(directory).glob("*.npz"))
+    logger.info("loading %d shards from %s", len(shard_paths), directory)
+
+    total_waveforms = 0
+    for path in shard_paths:
+        data = np.load(path)
+        total_waveforms += len(data["lengths"])
+    logger.info("total waveforms across shards: %d", total_waveforms)
+
+    gt_labels: list[str] = []
+    source = _iter_shard_waveforms(shard_paths, target_sr, gt_labels)
+    result = _extract_batched(
+        source, embedder, batch_size, desc="gen embeddings", total=total_waveforms
+    )
     result["gt_labels"] = gt_labels
     return result
