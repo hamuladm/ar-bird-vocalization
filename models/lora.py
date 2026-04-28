@@ -27,8 +27,12 @@ class LoRALinear(nn.Module):
 
         device = self.weight.device
         dtype = self.weight.dtype
-        self.lora_A = nn.Parameter(torch.zeros(rank, self.in_features, device=device, dtype=dtype))
-        self.lora_B = nn.Parameter(torch.zeros(self.out_features, rank, device=device, dtype=dtype))
+        self.lora_A = nn.Parameter(
+            torch.zeros(rank, self.in_features, device=device, dtype=dtype)
+        )
+        self.lora_B = nn.Parameter(
+            torch.zeros(self.out_features, rank, device=device, dtype=dtype)
+        )
         nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -39,9 +43,11 @@ class LoRALinear(nn.Module):
     def merge_and_unload(self) -> nn.Linear:
         """Fold LoRA weights into the base Linear for zero-overhead inference."""
         merged = nn.Linear(
-            self.in_features, self.out_features,
+            self.in_features,
+            self.out_features,
             bias=self.bias is not None,
-            device=self.weight.device, dtype=self.weight.dtype,
+            device=self.weight.device,
+            dtype=self.weight.dtype,
         )
         merged.weight.data.copy_(
             self.weight.data + (self.lora_B @ self.lora_A) * self.scaling
@@ -64,9 +70,7 @@ def apply_lora(
 
     Returns the number of modules replaced.
     """
-    parents: dict[str, nn.Module] = {
-        name: mod for name, mod in model.named_modules()
-    }
+    parents: dict[str, nn.Module] = {name: mod for name, mod in model.named_modules()}
     replaced = 0
     for full_name, module in list(model.named_modules()):
         if not isinstance(module, nn.Linear):
@@ -99,9 +103,7 @@ def merge_lora(model: nn.Module) -> int:
     Useful before saving a merged checkpoint for deployment.
     Returns the number of modules merged.
     """
-    parents: dict[str, nn.Module] = {
-        name: mod for name, mod in model.named_modules()
-    }
+    parents: dict[str, nn.Module] = {name: mod for name, mod in model.named_modules()}
     merged = 0
     for full_name, module in list(model.named_modules()):
         if not isinstance(module, LoRALinear):
@@ -121,7 +123,5 @@ def lora_summary(model: nn.Module) -> dict[str, int]:
     """Return a dict with total / trainable / lora param counts."""
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    lora_params = sum(
-        p.numel() for n, p in model.named_parameters() if "lora_" in n
-    )
+    lora_params = sum(p.numel() for n, p in model.named_parameters() if "lora_" in n)
     return {"total": total, "trainable": trainable, "lora": lora_params}

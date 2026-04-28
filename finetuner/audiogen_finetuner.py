@@ -93,40 +93,23 @@ class AudioGenFinetuner:
         return ce
 
     def _train_epoch(self, dataloader, optimizer, scheduler, epoch, grad_accum_steps=1):
-            self.lm.train()
-            total_loss = 0.0
-            n_steps = 0
-            pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
+        self.lm.train()
+        total_loss = 0.0
+        n_steps = 0
+        pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
-            optimizer.zero_grad()
-            step = -1
-            
-            for step, batch in enumerate(pbar):
-                codes = batch["codes"].to(self.device)
-                conditions = batch["conditions"]
+        optimizer.zero_grad()
+        step = -1
 
-                loss = self._compute_loss(codes, conditions)
-                scaled_loss = loss / grad_accum_steps
-                scaled_loss.backward()
+        for step, batch in enumerate(pbar):
+            codes = batch["codes"].to(self.device)
+            conditions = batch["conditions"]
 
-                if (step + 1) % grad_accum_steps == 0:
-                    nn.utils.clip_grad_norm_(
-                        (p for p in self.lm.parameters() if p.requires_grad), 1.0
-                    )
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad()
+            loss = self._compute_loss(codes, conditions)
+            scaled_loss = loss / grad_accum_steps
+            scaled_loss.backward()
 
-                total_loss += loss.item()
-                n_steps += 1
-                pbar.set_postfix(
-                    loss=f"{loss.item():.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}"
-                )
-
-                if wandb.run:
-                    wandb.log({"train_loss": loss.item(), "lr": scheduler.get_last_lr()[0]})
-
-            if step >= 0 and (step + 1) % grad_accum_steps != 0:
+            if (step + 1) % grad_accum_steps == 0:
                 nn.utils.clip_grad_norm_(
                     (p for p in self.lm.parameters() if p.requires_grad), 1.0
                 )
@@ -134,7 +117,24 @@ class AudioGenFinetuner:
                 scheduler.step()
                 optimizer.zero_grad()
 
-            return total_loss / max(n_steps, 1)
+            total_loss += loss.item()
+            n_steps += 1
+            pbar.set_postfix(
+                loss=f"{loss.item():.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}"
+            )
+
+            if wandb.run:
+                wandb.log({"train_loss": loss.item(), "lr": scheduler.get_last_lr()[0]})
+
+        if step >= 0 and (step + 1) % grad_accum_steps != 0:
+            nn.utils.clip_grad_norm_(
+                (p for p in self.lm.parameters() if p.requires_grad), 1.0
+            )
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad()
+
+        return total_loss / max(n_steps, 1)
 
     @torch.no_grad()
     def _validate_epoch(self, dataloader):
@@ -225,7 +225,9 @@ class AudioGenFinetuner:
                 from generator import AudiogenGenerator
 
                 gen = AudiogenGenerator.from_model(
-                    self.audiogen, self.ebird_to_id, device=str(self.device),
+                    self.audiogen,
+                    self.ebird_to_id,
+                    device=str(self.device),
                 )
                 log_dict = {
                     f"stage{stage}/train_loss_epoch": train_loss,
@@ -236,7 +238,8 @@ class AudioGenFinetuner:
                     name = self.id_to_ebird.get(cid, f"class_{cid}")
                     audio_np = gen.generate(cid)
                     log_dict[f"audio/{name}"] = wandb.Audio(
-                        audio_np, sample_rate=gen.sample_rate,
+                        audio_np,
+                        sample_rate=gen.sample_rate,
                         caption=f"{name}_s{stage}_e{epoch}",
                     )
                 wandb.log(log_dict)

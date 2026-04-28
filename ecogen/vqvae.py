@@ -34,9 +34,9 @@ class Quantize(nn.Module):
         self.eps = eps
 
         embed = torch.randn(dim, n_embed)
-        self.register_buffer('embed', embed)
-        self.register_buffer('cluster_size', torch.zeros(n_embed))
-        self.register_buffer('embed_avg', embed.clone())
+        self.register_buffer("embed", embed)
+        self.register_buffer("cluster_size", torch.zeros(n_embed))
+        self.register_buffer("embed_avg", embed.clone())
 
     def forward(self, input):
         flatten = input.reshape(-1, self.dim)

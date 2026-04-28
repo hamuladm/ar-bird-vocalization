@@ -218,3 +218,12 @@ data_relaxed/
 pretrain_data/
 pretrained_llama/
 audiogen_stage2_lora/
+generated_samples/
+eval_generated_samples/
+results/
+loss_curves/
+figures/
+subjective_eval/*.json
+subjective_eval/*.html
+subjective_eval/*.csv
+subjective_eval/*_samples

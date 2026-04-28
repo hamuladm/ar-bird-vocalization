@@ -99,8 +99,11 @@ class AudioGenPretrainer:
 
     def _generate_samples(self):
         from generator.audiogen_generator import AudiogenGenerator
+
         gen = AudiogenGenerator.from_model(
-            self.audiogen, self.ebird_to_id, device=str(self.device),
+            self.audiogen,
+            self.ebird_to_id,
+            device=str(self.device),
         )
         samples = []
         for cid in self.sample_class_ids:
@@ -110,8 +113,15 @@ class AudioGenPretrainer:
         return samples
 
     def _eval_and_checkpoint(
-        self, val_loader, optimizer, scheduler, stage, stage_dir,
-        epoch, global_step, best_val_loss,
+        self,
+        val_loader,
+        optimizer,
+        scheduler,
+        stage,
+        stage_dir,
+        epoch,
+        global_step,
+        best_val_loss,
     ):
         val_loss = self._validate(val_loader)
         print(f"Stage {stage} | Step {global_step}: val_loss={val_loss:.4f}")
@@ -125,7 +135,9 @@ class AudioGenPretrainer:
             samples = self._generate_samples()
             for name, audio, sr in samples:
                 log_dict[f"audio/{name}"] = wandb.Audio(
-                    audio, sample_rate=sr, caption=f"{name}_step{global_step}",
+                    audio,
+                    sample_rate=sr,
+                    caption=f"{name}_step{global_step}",
                 )
             wandb.log(log_dict)
 
@@ -133,16 +145,28 @@ class AudioGenPretrainer:
             best_val_loss = val_loss
             save_lm_checkpoint(
                 stage_dir / "best_model.pt",
-                self.lm, optimizer, scheduler,
-                epoch, global_step, self.n_species, self.ebird_to_id,
-                val_loss, stage,
+                self.lm,
+                optimizer,
+                scheduler,
+                epoch,
+                global_step,
+                self.n_species,
+                self.ebird_to_id,
+                val_loss,
+                stage,
             )
 
         save_lm_checkpoint(
             stage_dir / f"checkpoint_step_{global_step}.pt",
-            self.lm, optimizer, scheduler,
-            epoch, global_step, self.n_species, self.ebird_to_id,
-            val_loss, stage,
+            self.lm,
+            optimizer,
+            scheduler,
+            epoch,
+            global_step,
+            self.n_species,
+            self.ebird_to_id,
+            val_loss,
+            stage,
         )
 
         self.lm.train()
@@ -165,7 +189,7 @@ class AudioGenPretrainer:
                 f"rank={sc.lora_rank}, alpha={sc.lora_alpha}\n"
                 f"  Total params:     {stats['total']:,}\n"
                 f"  Trainable params: {stats['trainable']:,} "
-                f"({stats['trainable']/stats['total']*100:.2f}%)\n"
+                f"({stats['trainable'] / stats['total'] * 100:.2f}%)\n"
                 f"  LoRA params:      {stats['lora']:,}"
             )
         else:
@@ -248,20 +272,34 @@ class AudioGenPretrainer:
                 )
 
                 if wandb.run:
-                    wandb.log({
-                        "train_loss": loss.item(),
-                        "lr": scheduler.get_last_lr()[0],
-                    })
+                    wandb.log(
+                        {
+                            "train_loss": loss.item(),
+                            "lr": scheduler.get_last_lr()[0],
+                        }
+                    )
 
                 if global_step % EVAL_EVERY == 0:
                     best_val_loss = self._eval_and_checkpoint(
-                        val_loader, optimizer, scheduler, stage, stage_dir,
-                        epoch, global_step, best_val_loss,
+                        val_loader,
+                        optimizer,
+                        scheduler,
+                        stage,
+                        stage_dir,
+                        epoch,
+                        global_step,
+                        best_val_loss,
                     )
 
         best_val_loss = self._eval_and_checkpoint(
-            val_loader, optimizer, scheduler, stage, stage_dir,
-            sc.epochs, global_step, best_val_loss,
+            val_loader,
+            optimizer,
+            scheduler,
+            stage,
+            stage_dir,
+            sc.epochs,
+            global_step,
+            best_val_loss,
         )
 
         return str(stage_dir / "best_model.pt")

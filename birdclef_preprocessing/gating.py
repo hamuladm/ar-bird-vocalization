@@ -7,7 +7,7 @@ import torch
 from tqdm.auto import tqdm
 
 from config import EVAL_SAMPLE_RATE
-from judge import BirdClassifier
+from birdclef_preprocessing.judge import BirdClassifier
 from utils.audio import load_segment
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,9 @@ def gate_segments(
         device,
     )
     if rewrite_hf_paths:
-        logger.info("Path rewrite enabled: /workspace/.hf_home/ -> ~/.cache/huggingface/")
+        logger.info(
+            "Path rewrite enabled: /workspace/.hf_home/ -> ~/.cache/huggingface/"
+        )
 
     n_load_fail = 0
     n_fail_prob = n_fail_label = n_fail_entropy = 0
@@ -83,7 +85,9 @@ def gate_segments(
                 pbar.update(1)
                 path = _normalize_filepath(seg["filepath"], rewrite_hf_paths)
                 try:
-                    audio = load_segment(path, seg["start"], seg["end"], EVAL_SAMPLE_RATE)
+                    audio = load_segment(
+                        path, seg["start"], seg["end"], EVAL_SAMPLE_RATE
+                    )
                 except Exception:
                     n_load_fail += 1
                     continue

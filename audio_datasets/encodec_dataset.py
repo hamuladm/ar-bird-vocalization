@@ -52,4 +52,5 @@ def make_encodec_collate_fn(special_token_id):
             "codes": padded,
             "conditions": conditions,
         }
+
     return encodec_collate_fn

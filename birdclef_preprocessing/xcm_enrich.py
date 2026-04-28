@@ -23,6 +23,7 @@ def _normalize_filepath(filepath: str, rewrite_hf_paths: bool) -> str:
         )
     return filepath
 
+
 logger = logging.getLogger(__name__)
 
 XcmQuotaMode = Literal["birdclef_train", "fixed_per_class"]
@@ -517,7 +518,9 @@ def main() -> None:
     parser.add_argument(
         "--pretrain-segment-dir",
         type=str,
-        default=str(BC_XCM_PRETRAIN_SEGMENT_DIR) if BC_XCM_PRETRAIN_SEGMENT_DIR else None,
+        default=str(BC_XCM_PRETRAIN_SEGMENT_DIR)
+        if BC_XCM_PRETRAIN_SEGMENT_DIR
+        else None,
         help=(
             "Pretrain segment dir with val_segments.json / test_segments.json. "
             "Recordings in those holdout sets are excluded from enrichment to "
@@ -565,9 +568,7 @@ def main() -> None:
     )
 
     if not args.no_split_output:
-        splits = split_segments(
-            merged, args.val_ratio, args.test_ratio, args.seed
-        )
+        splits = split_segments(merged, args.val_ratio, args.test_ratio, args.seed)
         split_dir = Path(args.output_split_dir)
         save_segments(
             split_dir,

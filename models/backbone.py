@@ -19,9 +19,11 @@ BOS_TOKEN = SNAC_VOCAB_SIZE + 1
 EOS_TOKEN = SNAC_VOCAB_SIZE + 2
 CLASS_TOKEN_OFFSET = SNAC_VOCAB_SIZE + 3
 
+
 def _default_intermediate_size(n_embd):
     raw = int(2 * (4 * n_embd) / 3)
     return ((raw + 255) // 256) * 256
+
 
 def create_gpt2_model(
     vocab_size, n_positions=N_POSITIONS, n_embd=N_EMBD, n_layer=N_LAYER, n_head=N_HEAD
