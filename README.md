@@ -1,12 +1,12 @@
+<p align="center">
+  <img src="images/7e8d5fc7-d181-47ed-8952-b2c2c168f38f.jpeg" width="90%" alt="Illustration of a songbird in a forest, vocalization visualized as flowing white graphics from the beak."/>
+</p>
+
 # AR Bird Vocalization
 
 Autoregressive generation of bird vocalizations using class-conditioned language models over discrete audio tokens.
 
-> **Thesis:** [TODO: Add link to the thesis PDF]
->
 > **Demo:** [https://hamuladm.github.io/ar-bird-vocalization/](https://hamuladm.github.io/ar-bird-vocalization/)
->
-> **Pretrained weights:** [TODO: Add link to model checkpoints]
 
 ---
 
