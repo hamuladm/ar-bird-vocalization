@@ -260,12 +260,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--warmup-steps", type=int, default=500)
-    parser.add_argument(
-        "--grad-accum",
-        type=int,
-        default=1,
-        help="Micro-batches per optimizer step (effective batch ≈ batch_size × this)",
-    )
+    parser.add_argument("--grad-accum", type=int, default=1)
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--sample-classes", type=int, nargs="*", default=None)
     parser.add_argument("--num-sample-classes", type=int, default=3)

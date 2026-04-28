@@ -54,12 +54,7 @@ def parse_args():
         default="birdnet",
         choices=["birdnet", "convnext", "encodec"],
     )
-    parser.add_argument(
-        "--restrict-classes",
-        type=str,
-        default=None,
-        help="Path to ebird_to_id.json; restricts IS to only these classes",
-    )
+    parser.add_argument("--restrict-classes", type=str, default=None)
     return parser.parse_args()
 
 

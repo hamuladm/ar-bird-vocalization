@@ -128,32 +128,15 @@ def main():
         choices=["birdnet", "convnext"],
     )
     parser.add_argument("--no-reranker", action="store_true")
-    parser.add_argument(
-        "--prompt-template",
-        type=str,
-        default="descriptive",
-        help="Text prompt template for audiogen_text: 'scientific', 'common', "
-        "'descriptive', or a custom format string with {sci_name}, {common_name}, {ebird_code}",
-    )
+    parser.add_argument("--prompt-template", type=str, default="descriptive")
     parser.add_argument(
         "--augmentation",
         type=str,
         default="noise",
         choices=["noise", "interpolation", "latent_sampling"],
-        help="Ecogen augmentation mode.",
     )
-    parser.add_argument(
-        "--ratio",
-        type=float,
-        default=0.5,
-        help="Ecogen noise/interpolation/sampling ratio (default 0.5).",
-    )
-    parser.add_argument(
-        "--latent-stats",
-        type=str,
-        default=None,
-        help="Path to precomputed latent stats .pt file (required for latent_sampling).",
-    )
+    parser.add_argument("--ratio", type=float, default=0.5)
+    parser.add_argument("--latent-stats", type=str, default=None)
     args = parser.parse_args()
 
     if args.model_type != "audiogen_text" and args.checkpoint is None:

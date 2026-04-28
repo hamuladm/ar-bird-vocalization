@@ -1,28 +1,3 @@
-"""Prepare samples for MOS (Mean Opinion Score) subjective listening test.
-
-For each of 11 species, produces:
-    reference.wav   — longer GT clip (~30-35 s) for context
-    sample_1.wav    — one of {gt, audiogen, llama, rf}
-    sample_2.wav    — ...
-    sample_3.wav    — ...
-    sample_4.wav    — ...
-
-The assignment of systems to sample slots is shuffled independently
-per species (seed-controlled).  All output is resampled to 32 kHz
-and loudness-normalized to -16 LUFS (ITU-R BS.1770).
-
-Output layout
--------------
-    subjective_eval/mos_samples/
-      {ebird_code}/
-        reference.wav
-        sample_1.wav
-        sample_2.wav
-        sample_3.wav
-        sample_4.wav
-      manifest.json    (maps sample_N -> actual system per species)
-"""
-
 import argparse
 import json
 import random
@@ -52,10 +27,6 @@ MODELS_NPZ = {
     "rf": ROOT / "eval_generated_samples" / "rf_finetune",
 }
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def load_classes():
@@ -92,7 +63,6 @@ def _load_and_slice(filepath, start_sec, end_sec, target_sr=TARGET_SR):
 
 
 def _normalize_lufs(wav, sr, target_lufs=TARGET_LUFS):
-    """Normalize a [1, T] tensor to target LUFS, with peak limiting."""
     audio = wav.squeeze(0).numpy()
     meter = pyln.Meter(sr)
     current_lufs = meter.integrated_loudness(audio)
@@ -108,10 +78,6 @@ def _save_wav(wav, sr, path):
     wav = _normalize_lufs(wav, sr)
     torchaudio.save(str(path), wav, sr)
 
-
-# ---------------------------------------------------------------------------
-# Extract generated samples from npz shards
-# ---------------------------------------------------------------------------
 
 
 def load_generated_sample(model_dir, ebird_code, sample_idx=0):
@@ -135,10 +101,6 @@ def load_generated_sample(model_dir, ebird_code, sample_idx=0):
         wav = torchaudio.functional.resample(wav, sr, TARGET_SR)
     return wav, TARGET_SR
 
-
-# ---------------------------------------------------------------------------
-# Reference recordings (~30-35 s)
-# ---------------------------------------------------------------------------
 
 
 def _find_best_anchor_recordings(classes, all_segs):
@@ -170,10 +132,6 @@ def extract_reference(rec, duration=REFERENCE_DURATION):
     return wav, sr
 
 
-# ---------------------------------------------------------------------------
-# GT comparison clips (~10 s from test set)
-# ---------------------------------------------------------------------------
-
 
 def pick_gt_segments(classes, seed=42):
     with open(ENRICHED_DIR / "test_segments.json") as f:
@@ -191,37 +149,23 @@ def extract_gt_clip(seg):
     return wav, sr
 
 
-# ---------------------------------------------------------------------------
-# Main assembly
-# ---------------------------------------------------------------------------
-
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Prepare MOS subjective evaluation samples"
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=OUTPUT_DIR)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--sample-idx",
-        type=int,
-        default=1,
-        help="Index of the sample to extract from each npz shard",
-    )
+    parser.add_argument("--sample-idx", type=int, default=1)
     args = parser.parse_args()
 
     classes = load_classes()
     all_segs = _load_all_segments()
     print(f"Classes ({len(classes)}): {', '.join(sorted(classes))}")
 
-    # ---- Find best reference recordings ----
     print("\n=== Reference recordings ===")
     anchor_recs = _find_best_anchor_recordings(classes, all_segs)
 
-    # ---- Pick GT comparison segments ----
     gt_segs = pick_gt_segments(classes, seed=args.seed)
 
-    # ---- Load all generated samples into memory ----
     print("\n=== Loading generated samples from npz shards ===")
     generated = {}
     for model, model_dir in MODELS_NPZ.items():
@@ -231,7 +175,6 @@ def main():
             dur = wav.shape[1] / sr
             print(f"  {model}/{code}: {dur:.1f}s (resampled to {sr} Hz)")
 
-    # ---- Assemble per-species folders ----
     print("\n=== Assembling MOS sample folders ===")
     rng = random.Random(args.seed)
     manifest = {}
@@ -239,16 +182,13 @@ def main():
     for code in sorted(classes):
         species_dir = args.output / code
 
-        # Reference
         ref_wav, ref_sr = extract_reference(anchor_recs[code])
         _save_wav(ref_wav, ref_sr, species_dir / "reference.wav")
         ref_dur = ref_wav.shape[1] / ref_sr
         print(f"\n  {code}: reference {ref_dur:.1f}s")
 
-        # GT clip
         gt_wav, gt_sr = extract_gt_clip(gt_segs[code])
 
-        # All 4 system waveforms
         system_wavs = {
             "gt": (gt_wav, gt_sr),
             "audiogen": generated[("audiogen", code)],
@@ -256,7 +196,6 @@ def main():
             "rf": generated[("rf", code)],
         }
 
-        # Shuffle assignment
         order = list(SYSTEMS)
         rng.shuffle(order)
 
@@ -271,14 +210,12 @@ def main():
 
         manifest[code] = species_manifest
 
-    # ---- Write manifest ----
     manifest_path = args.output / "manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with open(manifest_path, "w") as f:
         json.dump(manifest, f, indent=2)
     print(f"\nManifest: {manifest_path}")
 
-    # ---- Summary ----
     total_wavs = len(list(args.output.rglob("*.wav")))
     print("\n=== Summary ===")
     print(f"  Species: {len(classes)}")

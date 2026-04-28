@@ -202,12 +202,6 @@ def _load_taxonomy(path=_TAXONOMY_PATH):
 
 
 class TextAudiogenGenerator:
-    """Pretrained AudioGen with original T5 text conditioning (no finetuning).
-
-    Uses the vanilla ``facebook/audiogen-medium`` model, conditioned on
-    text prompts built from eBird taxonomy names.
-    """
-
     PROMPT_TEMPLATES = {
         "scientific": "Bird vocalization. {sci_name}.",
         "common": "Bird vocalization. {common_name}.",

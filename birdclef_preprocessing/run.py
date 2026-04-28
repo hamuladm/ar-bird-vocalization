@@ -43,124 +43,42 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "BirdCLEF segments: Aves ∩ backbone, optional ConvNeXT 3-stage gating, "
-            "min_samples per class, optional enrichment from relaxed passed_segments.json, "
-            "then train/val/test split."
-        )
-    )
+    parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=str, default=str(BC_DATA_DIR))
     parser.add_argument("--output-dir", type=str, default=str(BC_SEGMENT_DIR))
-    parser.add_argument(
-        "--ebird-to-id",
-        type=str,
-        default=str(BC_EBIRD_TO_ID_PATH),
-        help="Backbone ebird_to_id.json (species vocabulary)",
-    )
+    parser.add_argument("--ebird-to-id", type=str, default=str(BC_EBIRD_TO_ID_PATH))
     parser.add_argument("--chunk-sec", type=float, default=CHUNK_LENGTH)
     parser.add_argument("--min-chunk-sec", type=float, default=MIN_CHUNK_SEC)
     parser.add_argument("--min-samples", type=int, default=BC_MIN_SAMPLES_PER_CLASS)
     parser.add_argument("--val-ratio", type=float, default=VAL_RATIO)
     parser.add_argument("--test-ratio", type=float, default=TEST_RATIO)
     parser.add_argument("--seed", type=int, default=SEED)
-    parser.add_argument(
-        "--no-gating",
-        action="store_true",
-        help="Skip embedder gating; min_samples applies to all chunks (legacy behavior).",
-    )
-    parser.add_argument(
-        "--min-top1-prob",
-        type=float,
-        default=BC_GATING_MIN_TOP1_PROB,
-        help="Keep segment if top-1 probability is strictly greater than this",
-    )
-    parser.add_argument(
-        "--max-entropy",
-        type=float,
-        default=BC_GATING_MAX_ENTROPY,
-        help="Keep segment if entropy is strictly less than this",
-    )
-    parser.add_argument(
-        "--gating-batch-size",
-        type=int,
-        default=BC_GATING_BATCH_SIZE,
-        help="Batch size for ConvNeXT forward during gating",
-    )
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default=EVAL_MODEL_CHECKPOINT,
-        help="Hugging Face id or local path for BirdSet ConvNeXT",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=DEVICE,
-        help="Torch device (default: device from config.yaml)",
-    )
-    parser.add_argument(
-        "--rewrite-hf-paths",
-        action="store_true",
-        help="Rewrite /workspace/.hf_home/ prefixes in segment paths (for relocated caches)",
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Less logging (warnings only); tqdm bars are unchanged",
-    )
-    parser.add_argument(
-        "--xcm-enrich",
-        action="store_true",
-        help="After BirdCLEF steps, add segments from passed_segments.json (birdclef.xcm_enrich)",
-    )
-    parser.add_argument(
-        "--xcm-finetune-ebird-json",
-        type=str,
-        default=None,
-        help="Finetune ebird_to_id.json (quota allowlist; default: birdclef.xcm_enrich / segment_dir)",
-    )
-    parser.add_argument(
-        "--xcm-passed-json",
-        type=str,
-        default=None,
-        help="JSON list of {filepath, start, end, ebird_code, top1_prob, …} (default: config)",
-    )
-    parser.add_argument(
-        "--xcm-min-top1-prob",
-        type=float,
-        default=None,
-        help="Skip rows with top1_prob <= this (default: birdclef.xcm_enrich.min_top1_prob or off)",
-    )
+    parser.add_argument("--no-gating", action="store_true")
+    parser.add_argument("--min-top1-prob", type=float, default=BC_GATING_MIN_TOP1_PROB)
+    parser.add_argument("--max-entropy", type=float, default=BC_GATING_MAX_ENTROPY)
+    parser.add_argument("--gating-batch-size", type=int, default=BC_GATING_BATCH_SIZE)
+    parser.add_argument("--checkpoint", type=str, default=EVAL_MODEL_CHECKPOINT)
+    parser.add_argument("--device", type=str, default=DEVICE)
+    parser.add_argument("--rewrite-hf-paths", action="store_true")
+    parser.add_argument("--quiet", action="store_true")
+    parser.add_argument("--xcm-enrich", action="store_true")
+    parser.add_argument("--xcm-finetune-ebird-json", type=str, default=None)
+    parser.add_argument("--xcm-passed-json", type=str, default=None)
+    parser.add_argument("--xcm-min-top1-prob", type=float, default=None)
     parser.add_argument(
         "--xcm-quota-mode",
         type=str,
         choices=("birdclef_train", "fixed_per_class"),
         default=None,
-        help="XCM quota: birdclef_train vs fixed_per_class (default: config)",
     )
-    parser.add_argument(
-        "--xcm-extra-segments-per-class",
-        type=int,
-        default=None,
-        help="With fixed_per_class: XCM segments per finetune class (default: config)",
-    )
-    parser.add_argument(
-        "--xcm-gate",
-        action="store_true",
-        help="Run ConvNeXT gating on enriched segments only before merging",
-    )
+    parser.add_argument("--xcm-extra-segments-per-class", type=int, default=None)
+    parser.add_argument("--xcm-gate", action="store_true")
     parser.add_argument(
         "--pretrain-segment-dir",
         type=str,
         default=str(BC_XCM_PRETRAIN_SEGMENT_DIR)
         if BC_XCM_PRETRAIN_SEGMENT_DIR
         else None,
-        help=(
-            "Pretrain segment dir with val_segments.json / test_segments.json. "
-            "Recordings in those holdout sets are excluded from XCM enrichment to "
-            "prevent data leakage (default: config birdclef.xcm_enrich.pretrain_segment_dir)"
-        ),
     )
     args = parser.parse_args()
 

@@ -33,11 +33,6 @@ def load_pretrain_holdout_filepaths(
     pretrain_segment_dir: str | Path,
     rewrite_hf_paths: bool = False,
 ) -> frozenset[str]:
-    """Collect all filepaths from pretrain val + test segment JSONs.
-
-    Any recording that appears in the pretrain holdout sets must be excluded
-    from finetuning enrichment to prevent data leakage.
-    """
     seg_dir = Path(pretrain_segment_dir)
     fps: set[str] = set()
     for name in ("val_segments.json", "test_segments.json"):
@@ -62,7 +57,6 @@ def load_pretrain_holdout_filepaths(
 
 
 def load_finetune_ebird_to_id(path: str | Path) -> dict[str, int]:
-    """Load ebird_code -> class id for finetuning (e.g. data/birdclef_segments/ebird_to_id.json)."""
     p = Path(path)
     if not p.is_file():
         raise FileNotFoundError(f"finetune ebird_to_id JSON not found: {p}")
@@ -84,7 +78,6 @@ def fixed_quota_seconds_per_class(
     extra_segments_per_class: int,
     chunk_sec: float,
 ) -> dict[str, float]:
-    """Quota in seconds: each finetune class gets `extra_segments_per_class` chunks of length `chunk_sec`."""
     if extra_segments_per_class < 0:
         raise ValueError("extra_segments_per_class must be >= 0")
     sec = float(extra_segments_per_class) * float(chunk_sec)
@@ -107,21 +100,6 @@ def enrich_with_xcm_from_jsons(
     xcm_extra_segments_per_class: int = 50,
     pretrain_segment_dir: str | Path | None = None,
 ) -> tuple[list[dict], dict[str, int], dict[str, Any]]:
-    """
-    Load finetune class vocabulary and XCM passed segments; set per-class audio quota,
-    then add relaxed segments until quotas are met.
-
-    quota_mode:
-      - birdclef_train: quota = (train split segment count per class) × chunk_sec,
-        intersected with finetune ebird_to_id keys (legacy behavior).
-      - fixed_per_class: quota = xcm_extra_segments_per_class × chunk_sec for every
-        finetune class (independent of BirdCLEF counts).
-
-    pretrain_segment_dir: path to pretrain segments directory containing
-      val_segments.json and test_segments.json.  When provided, recordings
-      that appear in those holdout splits are excluded from enrichment to
-      prevent data leakage between pretraining evaluation and finetuning.
-    """
     exclude_fps: frozenset[str] | None = None
     if pretrain_segment_dir is not None:
         exclude_fps = load_pretrain_holdout_filepaths(
@@ -382,7 +360,6 @@ def subset_ebird_to_id_for_classes(
     backbone_ebird_to_id_path: str | Path,
     class_codes: set[str],
 ) -> dict[str, int]:
-    """Map ebird_code -> backbone id for classes that passed BirdCleF (for quotas / save)."""
     path = Path(backbone_ebird_to_id_path)
     with open(path) as f:
         full_map = json.load(f)
@@ -424,114 +401,50 @@ def main() -> None:
         VAL_RATIO,
     )
 
-    parser = argparse.ArgumentParser(
-        description=(
-            "Standalone XCM enrich: BirdCLEF segment JSON + finetune ebird_to_id + relaxed "
-            "passed_segments.json → merged pool, then train/val/test splits (and optional merged JSON)."
-        )
-    )
-    parser.add_argument(
-        "--birdclef-segments-json",
-        type=str,
-        required=True,
-        help="JSON array of {filepath, start, end, ebird_code, ...} (pre-split pool, same as birdclef_preprocessing/run.py before split)",
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--birdclef-segments-json", type=str, required=True)
     parser.add_argument(
         "--finetune-ebird-to-id-json",
         type=str,
         default=str(BC_XCM_FINETUNE_EBIRD_TO_ID_JSON),
-        help="Finetune class map (default: birdclef.segment_dir/ebird_to_id.json or xcm_enrich.finetune_ebird_to_id_json)",
     )
     parser.add_argument(
         "--passed-segments-json",
         type=str,
         default=str(BC_XCM_PASSED_SEGMENTS_JSON),
-        help="Relaxed XCM passed segments (default: config birdclef.xcm_enrich.passed_segments_json)",
     )
-    parser.add_argument(
-        "--output-split-dir",
-        type=str,
-        default=str(BC_SEGMENT_DIR),
-        help="Write train_segments.json, val_segments.json, test_segments.json, ebird_to_id.json here",
-    )
-    parser.add_argument(
-        "--ebird-to-id",
-        type=str,
-        default=str(BC_EBIRD_TO_ID_PATH),
-        help="Backbone ebird_to_id.json for label ids in saved ebird_to_id.json (same as birdclef_preprocessing/run.py)",
-    )
-    parser.add_argument(
-        "--no-split-output",
-        action="store_true",
-        help="Do not write train/val/test/ebird_to_id to --output-split-dir",
-    )
-    parser.add_argument(
-        "--output-merged-json",
-        type=str,
-        default=None,
-        help="Optional path to also write BirdCLEF + XCM as one JSON array",
-    )
-    parser.add_argument(
-        "--output-xcm-only-json",
-        type=str,
-        default=None,
-        help="Optional path to write only segments added from passed_segments.json",
-    )
-    parser.add_argument(
-        "--output-stats-json",
-        type=str,
-        default=None,
-        help="Optional path to write enrich stats JSON",
-    )
+    parser.add_argument("--output-split-dir", type=str, default=str(BC_SEGMENT_DIR))
+    parser.add_argument("--ebird-to-id", type=str, default=str(BC_EBIRD_TO_ID_PATH))
+    parser.add_argument("--no-split-output", action="store_true")
+    parser.add_argument("--output-merged-json", type=str, default=None)
+    parser.add_argument("--output-xcm-only-json", type=str, default=None)
+    parser.add_argument("--output-stats-json", type=str, default=None)
     parser.add_argument(
         "--xcm-quota-mode",
         type=str,
         choices=("birdclef_train", "fixed_per_class"),
         default=BC_XCM_QUOTA_MODE,
-        help=(
-            "birdclef_train: quota = n_train×chunk per class from BirdCLEF JSON; "
-            "fixed_per_class: quota = --xcm-extra-segments-per-class × chunk for each finetune class"
-        ),
     )
     parser.add_argument(
         "--xcm-extra-segments-per-class",
         type=int,
         default=BC_XCM_EXTRA_SEGMENTS_PER_CLASS,
-        help="With fixed_per_class: number of chunk_sec-long XCM segments to add per finetune class",
     )
     parser.add_argument("--chunk-sec", type=float, default=CHUNK_LENGTH)
     parser.add_argument("--min-chunk-sec", type=float, default=MIN_CHUNK_SEC)
     parser.add_argument("--val-ratio", type=float, default=VAL_RATIO)
     parser.add_argument("--test-ratio", type=float, default=TEST_RATIO)
     parser.add_argument("--seed", type=int, default=SEED)
-    parser.add_argument(
-        "--rewrite-hf-paths",
-        action="store_true",
-        help="Rewrite /workspace/.hf_home/ prefixes in segment paths",
-    )
-    parser.add_argument(
-        "--min-top1-prob",
-        type=float,
-        default=None,
-        help="Skip passed rows with top1_prob <= this (default: config birdclef.xcm_enrich.min_top1_prob)",
-    )
+    parser.add_argument("--rewrite-hf-paths", action="store_true")
+    parser.add_argument("--min-top1-prob", type=float, default=None)
     parser.add_argument(
         "--pretrain-segment-dir",
         type=str,
         default=str(BC_XCM_PRETRAIN_SEGMENT_DIR)
         if BC_XCM_PRETRAIN_SEGMENT_DIR
         else None,
-        help=(
-            "Pretrain segment dir with val_segments.json / test_segments.json. "
-            "Recordings in those holdout sets are excluded from enrichment to "
-            "prevent data leakage (default: config birdclef.xcm_enrich.pretrain_segment_dir)"
-        ),
     )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Warnings only",
-    )
+    parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
 
     logging.basicConfig(
