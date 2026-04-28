@@ -71,6 +71,20 @@ body {
   border-radius: 6px;
 }
 
+.method-card .method-stage-list {
+  margin: 0.75rem 0 0 0;
+  padding-left: 1.25rem;
+  font-size: 0.92rem;
+}
+
+.method-card .method-stage-list li {
+  margin-bottom: 0.5rem;
+}
+
+.method-card .method-stage-list li:last-child {
+  margin-bottom: 0;
+}
+
 /* Audio samples table */
 .audio-table {
   width: 100%;

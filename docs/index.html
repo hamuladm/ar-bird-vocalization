@@ -126,10 +126,13 @@
             <h4>AudioGen + Species Conditioner</h4>
             <p>
               <a href="https://huggingface.co/facebook/audiogen-medium">AudioGen-medium</a> (EnCodec-based)
-              with the text conditioner replaced by a learned species embedding + linear projector.
-              Three-stage training: conditioner only &rarr; LoRA (rank 16, alpha 32) + conditioner &rarr;
-              refined LoRA + conditioner.
+              with the text conditioner replaced by a learned species embedding and linear projector.
             </p>
+            <ul class="method-stage-list">
+              <li><strong>Class-Conditional Adaptation.</strong> All language-model parameters are frozen; only the species embedding table and its output projection are trained. Gradients reach the embedding through frozen cross-attention layers, encouraging vectors the pretrained language model can exploit for species-conditioned next-token prediction without updating LM weights.</li>
+              <li><strong>Domain-Adaptive Pretraining.</strong> The full language model is unfrozen and trained jointly with the species conditioner on the <a href="https://huggingface.co/datasets/DBD-research-group/BirdSet">BirdSet XCM</a> corpus, adapting weights trained on general environmental audio to the spectrotemporal structure of bird vocalizations.</li>
+              <li><strong>Task-Specific Finetuning.</strong> Full-model training continues on the <a href="https://www.kaggle.com/competitions/birdclef-2026">BirdCLEF</a> subset with a reduced learning rate and extended warmup to limit update magnitude on the smaller set.</li>
+            </ul>
             <img src="static/images/audiogen.png" alt="AudioGen + Species Conditioner architecture" class="arch-img">
           </div>
         </div>
